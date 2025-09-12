@@ -39,4 +39,4 @@ This repository provides a complete workflow for site-directed mutagenesis exper
 - Python 3.x
   - primer3-py (primer design)
   - reportlab (PDF generation)
-  - (optional) ipywidgets, IPython.display for interactive use in Jupyter/Google Colab
+  - customtkinter (Windows GUI toolkit)
