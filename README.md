@@ -1,5 +1,5 @@
 # Mutagenesis_Protocol
-This repository provides a complete workflow for Site‑Directed Mutagenesis experiment planning — from primer design, to mutation step planning, to generating printable protocols and tube labels. It is tailored for molecular biology workflows involving multi‑site mutagenesis with automated primer design and PDF output.
+This repository provides a complete workflow for site-directed mutagenesis experiment planning with a modern Windows GUI — from primer design and mutation step planning to generating printable protocols and tube labels. It is tailored for molecular biology workflows involving multi-site mutagenesis with automated primer design and detailed PDF output.
 
 ✨ Key Features
 - Automated Primer Design
@@ -23,9 +23,11 @@ This repository provides a complete workflow for Site‑Directed Mutagenesis exp
   - Customizable start column/row to reuse partially used sheets.
   - Uses standard Hema 10900 label layout.
 
-- Interactive Jupyter/Colab UI (optional)
-  - Paste sequence and list of variants in a form.
-  - Choose experiment parameters and run everything with a single button.
+- Windows GUI with CustomTkinter
+  - Interactive desktop application for inputting sequences and mutations.
+  - Real-time validation and display of wildtype and variant protein sequences.
+  - Easy-to-use workflow controls for primer design and protocol generation.
+  - Output management directly integrated into GUI.
 
 📂 Outputs
 - primer_list.txt / .csv / .json – primer sequences and statistics.
