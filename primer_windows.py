@@ -1887,36 +1887,66 @@ class DatabankPage(ctk.CTkFrame):
         self.search_fields = []
         self.search_vars = []
 
-        # Search options frame
+        # Search options frame - REORGANIZED LAYOUT
         options_frame = ctk.CTkFrame(self.search_frame)
         options_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-        options_frame.grid_columnconfigure(2, weight=1)
+        options_frame.grid_columnconfigure(5, weight=1)  # Make column 5 expandable
 
-        ctk.CTkLabel(options_frame, text="Logic:", font=controller.SMALLFONT).grid(
+        # Row 0: Mutation count filter (now first)
+        ctk.CTkLabel(options_frame, text="Mutations:", font=controller.SMALLFONT).grid(
             row=0, column=0, padx=5, pady=5, sticky="w")
+
+        # Min mutations entry
+        self.min_mutations_var = ctk.StringVar(value="")
+        min_entry = ctk.CTkEntry(options_frame, textvariable=self.min_mutations_var, 
+                               placeholder_text="Min", width=50)
+        min_entry.grid(row=0, column=1, padx=2, pady=5, sticky="w")
+        self.min_mutations_var.trace("w", self.on_search_change)
+
+        ctk.CTkLabel(options_frame, text="to", font=controller.SMALLFONT).grid(
+            row=0, column=2, padx=2, pady=5, sticky="w")
+
+        # Max mutations entry
+        self.max_mutations_var = ctk.StringVar(value="")
+        max_entry = ctk.CTkEntry(options_frame, textvariable=self.max_mutations_var, 
+                               placeholder_text="Max", width=50)
+        max_entry.grid(row=0, column=3, padx=2, pady=5, sticky="w")
+        self.max_mutations_var.trace("w", self.on_search_change)
+
+        # Clear mutation filter button
+        clear_mut_btn = ctk.CTkButton(options_frame, text="Clear", 
+                                     command=self.clear_mutation_filter, width=60)
+        clear_mut_btn.grid(row=0, column=4, padx=10, pady=5, sticky="w")
+
+        # Row 1: Logic controls grouped together (now second)
+        ctk.CTkLabel(options_frame, text="Logic:", font=controller.SMALLFONT).grid(
+            row=1, column=0, padx=5, pady=5, sticky="w")
 
         self.search_logic_var = ctk.StringVar(value="AND")
         logic_menu = ctk.CTkOptionMenu(options_frame, values=["AND", "OR"], 
                                       variable=self.search_logic_var,
                                       command=self.on_search_change, width=70)
-        logic_menu.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        logic_menu.grid(row=1, column=1, padx=5, pady=5, sticky="w")
 
-        clear_all_btn = ctk.CTkButton(options_frame, text="Clear All", 
-                                     command=self.clear_all_search, width=80)
-        clear_all_btn.grid(row=0, column=2, padx=5, pady=5, sticky="e")
-
-        help_label = ctk.CTkLabel(options_frame, text="Use AND to match all terms, OR for any",
-                                 font=controller.SMALLFONT, text_color="gray")
-        help_label.grid(row=1, column=0, columnspan=4, padx=5, pady=(0, 5), sticky="w")
-
+        # Add/Remove buttons next to Logic
         self.add_btn = ctk.CTkButton(options_frame, text="+", 
                                     command=self.add_search_field, width=30, height=30)
-        self.add_btn.grid(row=0, column=3, padx=2, pady=5, sticky="w")
+        self.add_btn.grid(row=1, column=2, padx=2, pady=5, sticky="w")
 
         self.remove_btn = ctk.CTkButton(options_frame, text="−", 
                                        command=self.remove_search_field,
                                        width=30, height=30, state="disabled")
-        self.remove_btn.grid(row=0, column=4, padx=2, pady=5, sticky="w")
+        self.remove_btn.grid(row=1, column=3, padx=2, pady=5, sticky="w")
+
+        # Clear All button next to +/- buttons
+        clear_all_btn = ctk.CTkButton(options_frame, text="Clear All", 
+                                     command=self.clear_all_search, width=80)
+        clear_all_btn.grid(row=1, column=4, padx=10, pady=5, sticky="w")
+
+        # Row 2: Help text
+        help_label = ctk.CTkLabel(options_frame, text="Use AND to match all terms, OR for any. Filter by mutation count range (e.g., 2 to 4).",
+                                 font=controller.SMALLFONT, text_color="gray")
+        help_label.grid(row=2, column=0, columnspan=6, padx=5, pady=(0, 5), sticky="w")
 
         # Results label
         self.results_label = ctk.CTkLabel(self, text="", text_color="gray")
@@ -1939,6 +1969,10 @@ class DatabankPage(ctk.CTkFrame):
 
         refresh_btn = ctk.CTkButton(button_frame, text="Refresh", command=self.refresh_variants)
         refresh_btn.grid(row=0, column=4, sticky="w", padx=10, pady=10)
+
+        view_proteins_btn = ctk.CTkButton(button_frame, text="View Proteins", 
+                                         command=lambda: controller.show_frame(VariantProteinPage))
+        view_proteins_btn.grid(row=0, column=5, sticky="w", padx=10, pady=10)
 
         # Status label
         self.status_box = ctk.CTkLabel(self, text="", text_color="green")
@@ -1992,27 +2026,77 @@ class DatabankPage(ctk.CTkFrame):
         for search_var in self.search_vars:
             search_var.set("")
 
+    def clear_mutation_filter(self):
+        self.min_mutations_var.set("")
+        self.max_mutations_var.set("")
+
+    def count_mutations(self, mutation_string):
+        """Count the number of mutations in a mutation string"""
+        if not mutation_string or mutation_string == "(none)":
+            return 0
+        return len([m for m in mutation_string.split(',') if m.strip()])
+
     def on_search_change(self, *args):
         self.filter_variants()
 
     def get_active_search_terms(self):
         return [var.get().lower().strip() for var in self.search_vars if var.get().strip()]
 
+    def get_mutation_count_filter(self):
+        """Get the mutation count filter range"""
+        min_str = self.min_mutations_var.get().strip()
+        max_str = self.max_mutations_var.get().strip()
+        
+        min_val = None
+        max_val = None
+        
+        try:
+            if min_str:
+                min_val = int(min_str)
+        except ValueError:
+            pass
+            
+        try:
+            if max_str:
+                max_val = int(max_str)
+        except ValueError:
+            pass
+            
+        return min_val, max_val
+
     def filter_variants(self):
         search_terms = self.get_active_search_terms()
-        if not search_terms:
+        min_muts, max_muts = self.get_mutation_count_filter()
+        
+        if not search_terms and min_muts is None and max_muts is None:
             self.filtered_variants = self.all_variants.copy()
         else:
             self.filtered_variants = {}
             logic = self.search_logic_var.get()
+            
             for var_id, mutations in self.all_variants.items():
                 var_text = f"{var_id} {mutations}".lower()
-                if logic == "AND":
-                    if all(term in var_text for term in search_terms):
-                        self.filtered_variants[var_id] = mutations
-                else:  # OR logic
-                    if any(term in var_text for term in search_terms):
-                        self.filtered_variants[var_id] = mutations
+                mutation_count = self.count_mutations(mutations)
+                
+                # Check text search criteria
+                text_match = True
+                if search_terms:
+                    if logic == "AND":
+                        text_match = all(term in var_text for term in search_terms)
+                    else:  # OR logic
+                        text_match = any(term in var_text for term in search_terms)
+                
+                # Check mutation count criteria
+                count_match = True
+                if min_muts is not None and mutation_count < min_muts:
+                    count_match = False
+                if max_muts is not None and mutation_count > max_muts:
+                    count_match = False
+                
+                # Include variant if both criteria match
+                if text_match and count_match:
+                    self.filtered_variants[var_id] = mutations
+        
         self.update_variant_display()
 
     def update_variant_display(self):
@@ -2026,13 +2110,27 @@ class DatabankPage(ctk.CTkFrame):
         total = len(self.all_variants)
         filtered = len(self.filtered_variants)
         terms = self.get_active_search_terms()
+        min_muts, max_muts = self.get_mutation_count_filter()
         
-        if not terms:
-            self.results_label.configure(text=f"Showing all {total} variants")
-        else:
+        filter_desc = []
+        if terms:
             logic = self.search_logic_var.get()
             terms_txt = f" {logic} ".join([f'"{x}"' for x in terms])
-            self.results_label.configure(text=f"Showing {filtered} of {total} matching {terms_txt}")
+            filter_desc.append(f"text: {terms_txt}")
+        
+        if min_muts is not None or max_muts is not None:
+            if min_muts is not None and max_muts is not None:
+                filter_desc.append(f"mutations: {min_muts}-{max_muts}")
+            elif min_muts is not None:
+                filter_desc.append(f"mutations: ≥{min_muts}")
+            elif max_muts is not None:
+                filter_desc.append(f"mutations: ≤{max_muts}")
+        
+        if not filter_desc:
+            self.results_label.configure(text=f"Showing all {total} variants")
+        else:
+            filters = "; ".join(filter_desc)
+            self.results_label.configure(text=f"Showing {filtered} of {total} matching [{filters}]")
 
         # Create checkboxes for filtered variants
         for var_id, muts in sorted(self.filtered_variants.items()):
