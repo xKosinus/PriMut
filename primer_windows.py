@@ -1,7 +1,7 @@
 import customtkinter as ctk
 from customtkinter import DrawEngine
 DrawEngine.preferred_drawing_method = "polygon_shapes"  # Best for smooth corners
-from tkinter import ttk, scrolledtext, filedialog, messagebox
+from tkinter import simpledialog, ttk, scrolledtext, filedialog, messagebox
 from pathlib import Path
 import json
 import re
@@ -1069,11 +1069,11 @@ class MutagenesisApp(ctk.CTk):
         super().__init__()
         self.title("Site-Directed Mutagenesis Primer Designer")
         self.geometry("1050x500")
-        self.minsize(1200, 700)  # Set minimum size instead of disabling resize
+        self.minsize(1200, 700)
         
         # Configure main window grid
-        self.grid_columnconfigure(0, weight=0, minsize=200)  # Navigation column
-        self.grid_columnconfigure(1, weight=1)  # Main content column
+        self.grid_columnconfigure(0, weight=0, minsize=200)
+        self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
         self.LARGEFONT = ctk.CTkFont(family="Verdana", size=18, weight="bold")
@@ -1085,27 +1085,28 @@ class MutagenesisApp(ctk.CTk):
         # Left navigation frame
         nav_frame = ctk.CTkFrame(self, width=200)
         nav_frame.grid(row=0, column=0, sticky="nsew", padx=(5,2), pady=5)
-        nav_frame.grid_propagate(False)  # Maintain minimum width
+        nav_frame.grid_propagate(False)
         nav_frame.grid_columnconfigure(0, weight=1)
 
-        # Navigation buttons
+        # Updated navigation buttons to include Mutation Extractor
         nav_buttons = [
             ("User Input", InputPage),
             ("Variant Databank", DatabankPage),
             ("Wildtype Protein", WildtypeProteinPage),
-            ("Variant Proteins", VariantProteinPage),  # Add this line
+            ("Variant Proteins", VariantProteinPage),
             ("Protocol Results", ProtocolResultsPage),
-            ("Primer", PrimerPage)
+            ("Primer", PrimerPage),
+            ("Mutation Extractor", MutationExtractorPage)  # New tab
         ]
 
-        num_nav_buttons = len(nav_buttons)  # Your nav_buttons list
-        nav_frame.grid_rowconfigure(num_nav_buttons, weight=1)  # Makes this row "flex" and fill space
+        num_nav_buttons = len(nav_buttons)
+        nav_frame.grid_rowconfigure(num_nav_buttons, weight=1)
 
         for i, (text, page_class) in enumerate(nav_buttons):
             btn = ctk.CTkButton(nav_frame, text=text, command=lambda p=page_class: self.show_frame(p))
             btn.grid(row=i, column=0, sticky="ew", pady=(15 if i == 0 else 5, 5), padx=15)
 
-        # After creating nav_frame
+        # GitHub button
         github_button = GithubButton(nav_frame, "https://github.com/xKosinus/Mutagenesis_Protocol/tree/windows_gui", text="GitHub Source")
         github_button.grid(row=num_nav_buttons + 1, column=0, sticky="ew", padx=15, pady=20)
 
@@ -1115,8 +1116,9 @@ class MutagenesisApp(ctk.CTk):
         container.grid_columnconfigure(0, weight=1)
         container.grid_rowconfigure(0, weight=1)
 
+        # Updated frames list to include MutationExtractorPage
         self.frames = {}
-        for F in (InputPage, DatabankPage, WildtypeProteinPage, VariantProteinPage, ProtocolResultsPage, PrimerPage):  # Add VariantProteinPage
+        for F in (InputPage, MutationExtractorPage, DatabankPage, WildtypeProteinPage, VariantProteinPage, ProtocolResultsPage, PrimerPage):
             frame = F(container, self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
@@ -1127,13 +1129,15 @@ class MutagenesisApp(ctk.CTk):
     def show_frame(self, page_class):
         frame = self.frames[page_class]
         frame.tkraise()
-        # Update protein page when switching to it
+        # Update specific pages when switching to them
         if page_class == WildtypeProteinPage:
             frame.update_protein_display()
-        elif page_class == VariantProteinPage:  # Add this line
-            frame.update_variant_display()      # Add this line  
+        elif page_class == VariantProteinPage:
+            frame.update_variant_display()
         elif page_class == PrimerPage:
             frame.load_primers()
+        elif page_class == MutationExtractorPage:
+            frame.refresh_reference_sequences()
 
     def get_databank(self):
         path = Path(self.output_dir.get()) / "protocols" / "variant_databank.json"
@@ -1180,7 +1184,10 @@ class InputPage(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=0, minsize=200)  # Label column
         self.grid_columnconfigure(1, weight=1)  # Input column
         self.grid_columnconfigure(2, weight=0)  # Button column
-        self.grid_rowconfigure(10, weight=1)  # Output textbox row
+        self.grid_rowconfigure(5, weight=1)  # Variant mutations row (expandable)
+
+        # Initialize sequence management variables
+        self.sequence_undo_stack = []
 
         # Title label
         title = ctk.CTkLabel(self,
@@ -1204,7 +1211,7 @@ class InputPage(ctk.CTkFrame):
         ctk.CTkLabel(self, text="Wildtype DNA Sequence:", font=controller.MEDIUMFONT).grid(
             row=2, column=0, sticky="nw", padx=10, pady=(15, 0))
 
-        # Frame for DNA sequence input and info button (like var_frame)
+        # Frame for DNA sequence input and info button
         seq_frame = ctk.CTkFrame(self)
         seq_frame.grid(row=2, column=1, columnspan=2, pady=5, padx=5, sticky="ew")
         seq_frame.grid_columnconfigure(0, weight=1)
@@ -1222,14 +1229,27 @@ class InputPage(ctk.CTkFrame):
         question_seq_btn = ctk.CTkButton(seq_frame, text="?", width=30, height=30, command=self.show_info_sequence)
         question_seq_btn.grid(row=0, column=1, sticky="ne", pady=5)
 
+        # Sequence management buttons frame
+        seq_buttons_frame = ctk.CTkFrame(self)
+        seq_buttons_frame.grid(row=3, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
+        
+        save_seq_btn = ctk.CTkButton(seq_buttons_frame, text="Save Sequence", command=self.save_sequence)
+        save_seq_btn.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        
+        load_seq_btn = ctk.CTkButton(seq_buttons_frame, text="Load/Manage Sequences", command=self.load_manage_sequences)
+        load_seq_btn.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+
+        undo_seq_btn = ctk.CTkButton(seq_buttons_frame, text="Undo Sequence Changes", command=self.undo_sequence_changes)
+        undo_seq_btn.grid(row=0, column=2, padx=10, pady=5, sticky="w")
+
         # Variant Mutations input
         ctk.CTkLabel(self, text="Mutations per Variant:", 
                     font=controller.MEDIUMFONT).grid(
-            row=3, column=0, sticky="nw", padx=10, pady=(10, 0))
+            row=4, column=0, sticky="nw", padx=10, pady=(10, 0))
         
         # Frame for variant text and info button
         var_frame = ctk.CTkFrame(self)
-        var_frame.grid(row=3, column=1, columnspan=2, pady=5, padx=5, sticky="ew")
+        var_frame.grid(row=4, column=1, columnspan=2, pady=5, padx=5, sticky="ew")
         var_frame.grid_columnconfigure(0, weight=1)
         
         self.var_text = ctk.CTkTextbox(var_frame, height=120, font=controller.SMALLFONT)
@@ -1241,7 +1261,7 @@ class InputPage(ctk.CTkFrame):
 
         # Input parameters in a grid
         params_frame = ctk.CTkFrame(self)
-        params_frame.grid(row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
+        params_frame.grid(row=5, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
         params_frame.grid_columnconfigure(1, weight=1)
         params_frame.grid_columnconfigure(3, weight=1)
 
@@ -1266,7 +1286,7 @@ class InputPage(ctk.CTkFrame):
 
         # Action buttons
         button_frame = ctk.CTkFrame(self)
-        button_frame.grid(row=9, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
+        button_frame.grid(row=6, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
         
         run_btn = ctk.CTkButton(button_frame, text="Run Complete Workflow", 
                                font=controller.MEDIUMFONT, command=self.run_workflow)
@@ -1276,10 +1296,10 @@ class InputPage(ctk.CTkFrame):
                                 font=controller.MEDIUMFONT, command=self.undo_change)
         undo_btn.grid(row=0, column=1, padx=10, pady=10, sticky="w")
 
-        # Output textbox (expandable)
-        self.output_text = ctk.CTkTextbox(self, font=controller.SMALLFONT)
-        self.output_text.grid(row=10, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
-        self.output_text.configure(state="disabled")
+        # Status label (replaces the large output textbox)
+        self.status_label = ctk.CTkLabel(self, text="Ready to run workflow", 
+                                        font=controller.SMALLFONT, text_color="gray")
+        self.status_label.grid(row=7, column=0, columnspan=3, sticky="w", padx=10, pady=5)
 
     def create_max_mut_combo(self, parent):
         self.max_mut_var = ctk.IntVar(value=1)
@@ -1304,6 +1324,207 @@ class InputPage(ctk.CTkFrame):
             return ""
         return seq.replace('\n', '').upper()
 
+    def get_sequences_file_path(self):
+        """Get the path to the wildtype_sequences.json file"""
+        output_dir = Path(self.controller.output_dir.get())
+        return output_dir / "wildtype_sequences.json"
+
+    def load_sequences_database(self):
+        file_path = self.get_sequences_file_path()
+        print(f"Loading sequences database from: {file_path}")
+        if file_path.exists():
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    sequences = json.load(f)
+                print(f"Loaded sequences: {sequences}")
+                return sequences
+            except Exception as e:
+                print(f"Error loading sequences database: {e}")
+                messagebox.showerror("Error", f"Failed to load sequences database: {str(e)}")
+                return {}
+        else:
+            print("Sequences file does not exist.")
+            return {}
+
+    def save_sequences_database(self, sequences_db):
+        """Save sequences to JSON file"""
+        file_path = self.get_sequences_file_path()
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create backup for undo functionality
+        if file_path.exists():
+            try:
+                with open(file_path, "r") as f:
+                    current_state = json.load(f)
+                self.sequence_undo_stack.append(copy.deepcopy(current_state))
+            except:
+                self.sequence_undo_stack.append({})
+        else:
+            self.sequence_undo_stack.append({})
+        
+        # Keep only last 10 undo states to prevent memory issues
+        if len(self.sequence_undo_stack) > 10:
+            self.sequence_undo_stack.pop(0)
+        
+        with open(file_path, "w") as f:
+            json.dump(sequences_db, f, indent=2)
+
+    def save_sequence(self):
+        """Save current sequence with user-provided name"""
+        current_seq = self.get_dna_sequence()
+        if not current_seq:
+            messagebox.showwarning("Warning", "Please enter a DNA sequence before saving.")
+            return
+
+        # Get unique name from user
+        while True:
+            name = simpledialog.askstring("Save Sequence", "Enter a unique name for this sequence:")
+            if name is None:  # User cancelled
+                return
+            
+            name = name.strip()
+            if not name:
+                messagebox.showwarning("Warning", "Please enter a non-empty name.")
+                continue
+            
+            # Check if name already exists
+            sequences_db = self.load_sequences_database()
+            if name in sequences_db:
+                retry = messagebox.askyesno("Name Exists", 
+                    f"A sequence named '{name}' already exists. Do you want to overwrite it?")
+                if not retry:
+                    continue
+            
+            # Save the sequence
+            sequences_db[name] = current_seq
+            self.save_sequences_database(sequences_db)
+            self.status_label.configure(text=f"Sequence '{name}' saved successfully", text_color="green")
+            break
+
+    def load_manage_sequences(self):
+        """Open sequence management window"""
+        sequences_db = self.load_sequences_database()
+        if not sequences_db:
+            messagebox.showinfo("Info", "No saved sequences found.")
+            return
+
+        # Create management window
+        manage_window = ctk.CTkToplevel(self)
+        manage_window.title("Manage Saved Sequences")
+        manage_window.geometry("800x500")
+        manage_window.transient(self)
+        manage_window.after(100, manage_window.grab_set)
+
+        # Configure grid
+        manage_window.grid_columnconfigure(0, weight=1)
+        manage_window.grid_rowconfigure(1, weight=1)
+
+        # Title
+        title_label = ctk.CTkLabel(manage_window, text="Saved Sequences", 
+                                  font=self.controller.LARGEFONT)
+        title_label.grid(row=0, column=0, pady=20, sticky="ew")
+
+        # Sequences list frame
+        list_frame = ctk.CTkScrollableFrame(manage_window)
+        list_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=10)
+        list_frame.grid_columnconfigure(1, weight=1)
+
+        # Track checkboxes and radio buttons
+        sequence_vars = {}
+        load_var = ctk.StringVar(value="")
+
+        # Headers
+        ctk.CTkLabel(list_frame, text="Load", font=self.controller.MEDIUMFONT).grid(
+            row=0, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(list_frame, text="Delete", font=self.controller.MEDIUMFONT).grid(
+            row=0, column=1, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(list_frame, text="Name", font=self.controller.MEDIUMFONT).grid(
+            row=0, column=2, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(list_frame, text="Sequence (first 50 chars)", font=self.controller.MEDIUMFONT).grid(
+            row=0, column=3, padx=10, pady=5, sticky="w")
+
+        # Create list items
+        for i, (name, sequence) in enumerate(sorted(sequences_db.items()), start=1):
+            # Radio button for loading (only one can be selected)
+            load_radio = ctk.CTkRadioButton(list_frame, text="", variable=load_var, value=name)
+            load_radio.grid(row=i, column=0, padx=10, pady=2, sticky="w")
+            
+            # Checkbox for deletion (multiple can be selected)
+            delete_var = ctk.BooleanVar(value=False)
+            sequence_vars[name] = delete_var
+            delete_check = ctk.CTkCheckBox(list_frame, text="", variable=delete_var)
+            delete_check.grid(row=i, column=1, padx=10, pady=2, sticky="w")
+            
+            # Name label
+            name_label = ctk.CTkLabel(list_frame, text=name, font=self.controller.SMALLFONT)
+            name_label.grid(row=i, column=2, padx=10, pady=2, sticky="w")
+            
+            # Sequence preview (first 50 characters)
+            seq_preview = sequence[:50] + ("..." if len(sequence) > 50 else "")
+            seq_label = ctk.CTkLabel(list_frame, text=seq_preview, 
+                                   font=ctk.CTkFont(family="Courier", size=10))
+            seq_label.grid(row=i, column=3, padx=10, pady=2, sticky="w")
+
+        # Buttons frame
+        button_frame = ctk.CTkFrame(manage_window)
+        button_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=10)
+
+        def load_selected():
+            selected_name = load_var.get()
+            if not selected_name:
+                messagebox.showwarning("Warning", "Please select a sequence to load.")
+                return
+            
+            selected_sequence = sequences_db[selected_name]
+            self.seq_text._clear_placeholder()
+            self.seq_text.delete("1.0", "end")
+            self.seq_text.insert("1.0", selected_sequence)
+            self.status_label.configure(text=f"Loaded sequence '{selected_name}'", text_color="green")
+            manage_window.destroy()
+
+        def delete_selected():
+            to_delete = [name for name, var in sequence_vars.items() if var.get()]
+            if not to_delete:
+                messagebox.showwarning("Warning", "Please select sequences to delete.")
+                return
+            
+            confirm = messagebox.askyesno("Confirm Deletion", 
+                f"Are you sure you want to delete {len(to_delete)} sequence(s)?")
+            if not confirm:
+                return
+            
+            # Remove selected sequences
+            updated_db = {name: seq for name, seq in sequences_db.items() if name not in to_delete}
+            self.save_sequences_database(updated_db)
+            self.status_label.configure(text=f"Deleted {len(to_delete)} sequence(s)", text_color="orange")
+            manage_window.destroy()
+
+        load_btn = ctk.CTkButton(button_frame, text="Load Selected", command=load_selected)
+        load_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+
+        delete_btn = ctk.CTkButton(button_frame, text="Delete Selected", command=delete_selected)
+        delete_btn.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+
+        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=manage_window.destroy)
+        cancel_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
+
+    def undo_sequence_changes(self):
+        """Undo last sequence database change"""
+        if not self.sequence_undo_stack:
+            self.status_label.configure(text="No sequence changes to undo", text_color="orange")
+            return
+
+        try:
+            last_state = self.sequence_undo_stack.pop()
+            file_path = self.get_sequences_file_path()
+            
+            with open(file_path, "w") as f:
+                json.dump(last_state, f, indent=2)
+            
+            self.status_label.configure(text="Sequence changes undone successfully", text_color="green")
+        except Exception as e:
+            self.status_label.configure(text=f"Undo failed: {str(e)}", text_color="red")
+
     def show_info_mutations(self):
         messagebox.showinfo("Info",
                             "Enter mutations separated by commas, one variant per line.\nExample: S19V, S30V\nMultiple variants separated by new lines.")
@@ -1318,9 +1539,7 @@ class InputPage(ctk.CTkFrame):
             self.controller.output_dir.set(new_dir)
 
     def run_workflow(self):
-        # Enable textbox before writing
-        self.output_text.configure(state="normal")
-        self.output_text.delete("1.0", "end")
+        self.status_label.configure(text="Running workflow...", text_color="blue")
         
         seq = self.get_dna_sequence()
         variants_raw = self.var_text.get("1.0", "end").strip().split('\n')
@@ -1332,31 +1551,16 @@ class InputPage(ctk.CTkFrame):
         skip_db = self.skip_db.get()
 
         output_dir = Path(self.controller.output_dir.get())
-        self.output_text.insert("end", f"Output directory: {output_dir}\n")
-        self.output_text.insert("end", "=== RUNNING MUTAGENESIS WORKFLOW ===\n")
-        self.output_text.insert("end", f"Sequence length: {len(seq)}\n")
-        self.output_text.insert("end", f"Variants: {variant_list}\n")
-        self.output_text.insert("end", f"Max mutations/step: {max_mutations}\n")
-        self.output_text.insert("end", f"Variant prefix: {vp}\n")
-        self.output_text.insert("end", f"Label START_COL: {start_col}, START_ROW: {start_row}\n\n")
-
-        # ... rest of your workflow inserts
-        self.output_text.insert("end", "✅ Primer design complete.\n\n")
-        self.output_text.insert("end", "\n🎉 Workflow finished! Check your output directory for outputs.\n")
-
-        # Lock textbox again
-        self.output_text.configure(state="disabled")
-
 
         # ---- Primer design ----
         try:
             pg = PrimerGenerator(flank_size_bases=30)
             if not pg.check_sequence_validity(seq, flank_size=30):
-                self.output_text.insert("end", "❌ Sequence failed validation.\n")
+                self.status_label.configure(text="Sequence failed validation", text_color="red")
                 return
             pg.validate_mutations_against_sequence(seq, variant_list)
         except Exception as e:
-            self.output_text.insert("end", str(e) + "\n")
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
             return
 
         all_primer_data = []
@@ -1374,7 +1578,6 @@ class InputPage(ctk.CTkFrame):
                     existing_pairs.add(key)
         pg.save_primer_list(all_primer_data, output_dir=output_dir)
         pg.save_primer_data_json(all_primer_data, output_dir=output_dir)
-        self.output_text.insert("end", "✅ Primer design complete.\n\n")
 
         # ---- Protocol generation ----
         try:
@@ -1389,25 +1592,23 @@ class InputPage(ctk.CTkFrame):
                 undo_stack=self.controller.undo_stack
             )
             protocol.run()
-            self.output_text.insert("end", "\n🎉 Workflow finished! Check your output directory for outputs.\n")
+            self.status_label.configure(text="Workflow completed successfully! Check output directory.", text_color="green")
             self.controller.frames[DatabankPage].refresh_variants()
         except Exception as e:
-            self.output_text.insert("end", str(e) + "\n")
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
 
     def undo_change(self):
         databank_path = Path(self.controller.output_dir.get()) / "protocols" / "variant_databank.json"
-        self.output_text.configure(state="normal")
         try:
             if self.controller.undo_stack:
                 last_state = self.controller.undo_stack.pop()
                 with open(databank_path, "w") as f:
                     json.dump(last_state, f, indent=2)
-                self.output_text.insert("end", "✅ Undid last change, variant databank restored.\n")
+                self.status_label.configure(text="Last change undone successfully", text_color="green")
             else:
-                self.output_text.insert("end", "No undo steps available.\n")
+                self.status_label.configure(text="No changes to undo", text_color="orange")
         except Exception as e:
-            self.output_text.insert("end", "Undo failed: " + str(e) + "\n")
-        self.output_text.configure(state="disabled")
+            self.status_label.configure(text=f"Undo failed: {str(e)}", text_color="red")
 
 class WildtypeProteinPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -1957,9 +2158,9 @@ class DatabankPage(ctk.CTkFrame):
         button_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
         
         buttons = [
-            ("Delete Selected Variants", self.delete_variants, 0),
-            ("Select All", self.select_all, 1),
-            ("Deselect All", self.deselect_all, 2),
+            ("Select All", self.select_all, 0),
+            ("Deselect All", self.deselect_all, 1),
+            ("Delete Selected Variants", self.delete_variants, 2),
             ("Undo Delete", self.undo_delete, 3)
         ]
         
@@ -2401,6 +2602,452 @@ class PrimerPage(ctk.CTkFrame):
         text = "\n".join(lines)
         self.clipboard_clear()
         self.clipboard_append(text)
+
+class MutationExtractorPage(ctk.CTkFrame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        
+        # Configure grid for responsive layout
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)  # FASTA content area
+
+        # Genetic code for DNA to protein translation
+        self.genetic_code = {
+            'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
+            'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
+            'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
+            'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
+            'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
+            'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
+            'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
+            'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
+            'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
+            'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
+            'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
+            'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
+            'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
+            'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
+            'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
+            'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G'
+        }
+
+        # Header frame
+        header_frame = ctk.CTkFrame(self)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        title = ctk.CTkLabel(header_frame,
+                             text="Mutation Extractor",
+                             corner_radius=10,
+                             fg_color="#4a90e2",
+                             text_color="white",
+                             font=controller.LARGEFONT,
+                             height=50)
+        title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+
+        back_btn = ctk.CTkButton(header_frame, text="Back to Input", 
+                                command=lambda: controller.show_frame(InputPage))
+        back_btn.grid(row=0, column=1, padx=10, pady=10, sticky="e")
+
+        # Reference sequence selection frame
+        ref_frame = ctk.CTkFrame(self)
+        ref_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+        ref_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(ref_frame, text="Reference Sequence:", font=controller.MEDIUMFONT).grid(
+            row=0, column=0, sticky="w", padx=10, pady=10)
+
+        self.ref_sequence_var = ctk.StringVar(value="")
+        self.ref_dropdown = ctk.CTkOptionMenu(ref_frame, values=["No sequences available"], 
+                                             variable=self.ref_sequence_var, width=200)
+        self.ref_dropdown.grid(row=0, column=1, sticky="w", padx=5, pady=10)
+
+        refresh_btn = ctk.CTkButton(ref_frame, text="Refresh", command=self.refresh_reference_sequences, width=80)
+        refresh_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
+
+        # FASTA file selection frame
+        fasta_frame = ctk.CTkFrame(self)
+        fasta_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+        fasta_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(fasta_frame, text="FASTA File:", font=controller.MEDIUMFONT).grid(
+            row=0, column=0, sticky="w", padx=10, pady=10)
+
+        self.fasta_path_var = ctk.StringVar(value="")
+        self.fasta_entry = ctk.CTkEntry(fasta_frame, textvariable=self.fasta_path_var, state="readonly")
+        self.fasta_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=10)
+
+        browse_btn = ctk.CTkButton(fasta_frame, text="Browse...", command=self.browse_fasta_file, width=80)
+        browse_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
+
+        # FASTA preview area (expandable)
+        preview_label = ctk.CTkLabel(self, text="FASTA File Preview:", font=controller.MEDIUMFONT)
+        preview_label.grid(row=3, column=0, sticky="nw", padx=10, pady=(10, 5))
+
+        self.fasta_preview = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=11))
+        self.fasta_preview.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.fasta_preview.configure(state="disabled")
+
+        # Action buttons frame
+        action_frame = ctk.CTkFrame(self)
+        action_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=10)
+
+        extract_btn = ctk.CTkButton(action_frame, text="Extract Mutations", 
+                                   command=self.extract_mutations, font=controller.MEDIUMFONT)
+        extract_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+
+        # Status label
+        self.status_label = ctk.CTkLabel(self, text="Select reference sequence and FASTA file to begin", 
+                                        font=controller.SMALLFONT, text_color="gray")
+        self.status_label.grid(row=5, column=0, sticky="w", padx=10, pady=5)
+
+        # Initialize
+        self.refresh_reference_sequences()
+
+    def translate_dna_to_protein(self, dna_sequence):
+        """Translate DNA sequence to protein sequence"""
+        protein = []
+        for i in range(0, len(dna_sequence) - 2, 3):
+            codon = dna_sequence[i:i+3]
+            if codon in self.genetic_code:
+                protein.append(self.genetic_code[codon])
+            else:
+                protein.append('X')
+        return ''.join(protein)
+
+    def get_sequences_file_path(self):
+        """Get the path to the wildtype_sequences.json file"""
+        output_dir = Path(self.controller.output_dir.get())
+        return output_dir / "wildtype_sequences.json"
+
+    def load_saved_sequences(self):
+        """Load sequences from JSON file"""
+        file_path = self.get_sequences_file_path()
+        if file_path.exists():
+            try:
+                with open(file_path, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, Exception):
+                return {}
+        return {}
+
+    def refresh_reference_sequences(self):
+        """Refresh the dropdown with available reference sequences"""
+        sequences_db = self.load_saved_sequences()
+        if sequences_db:
+            sequence_names = list(sequences_db.keys())
+            self.ref_dropdown.configure(values=sequence_names)
+            if sequence_names:
+                self.ref_sequence_var.set(sequence_names[0])
+                self.status_label.configure(text=f"Loaded {len(sequence_names)} reference sequence(s)", text_color="green")
+            else:
+                self.ref_dropdown.configure(values=["No sequences available"])
+                self.ref_sequence_var.set("")
+        else:
+            self.ref_dropdown.configure(values=["No sequences available"])
+            self.ref_sequence_var.set("")
+            self.status_label.configure(text="No saved sequences found. Save sequences in Input tab first.", text_color="orange")
+
+    def browse_fasta_file(self):
+        """Browse and select FASTA file"""
+        from tkinter import filedialog
+        
+        file_path = filedialog.askopenfilename(
+            title="Select FASTA File",
+            filetypes=[("FASTA files", "*.fasta *.fas *.fa"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            self.fasta_path_var.set(file_path)
+            self.preview_fasta_file(file_path)
+
+    def preview_fasta_file(self, file_path):
+        """Preview the selected FASTA file"""
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            # Show first 1000 characters as preview
+            preview_content = content[:1000]
+            if len(content) > 1000:
+                preview_content += "\n\n... (file truncated for preview)"
+            
+            self.fasta_preview.configure(state="normal")
+            self.fasta_preview.delete("1.0", "end")
+            self.fasta_preview.insert("1.0", preview_content)
+            self.fasta_preview.configure(state="disabled")
+            
+            # Count sequences
+            seq_count = content.count('>')
+            self.status_label.configure(text=f"FASTA file loaded with {seq_count} sequence(s)", text_color="green")
+            
+        except Exception as e:
+            self.status_label.configure(text=f"Error reading FASTA file: {str(e)}", text_color="red")
+
+    def parse_fasta(self, file_path):
+        """Parse FASTA file and return list of (header, sequence) tuples"""
+        sequences = []
+        try:
+            with open(file_path, 'r') as f:
+                current_header = None
+                current_sequence = []
+                
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('>'):
+                        # Save previous sequence if exists
+                        if current_header is not None:
+                            sequences.append((current_header, ''.join(current_sequence)))
+                        # Start new sequence
+                        current_header = line[1:]  # Remove '>'
+                        current_sequence = []
+                    elif line and current_header is not None:
+                        current_sequence.append(line.upper())
+                
+                # Don't forget the last sequence
+                if current_header is not None:
+                    sequences.append((current_header, ''.join(current_sequence)))
+                    
+        except Exception as e:
+            raise Exception(f"Error parsing FASTA file: {str(e)}")
+        
+        return sequences
+
+    def get_reference_protein_sequence(self):
+        """Get the reference protein sequence from selected DNA sequence"""
+        ref_name = self.ref_sequence_var.get()
+        if not ref_name or ref_name == "No sequences available":
+            raise Exception("Please select a reference sequence")
+        
+        sequences_db = self.load_saved_sequences()
+        if ref_name not in sequences_db:
+            raise Exception(f"Reference sequence '{ref_name}' not found")
+        
+        dna_sequence = sequences_db[ref_name]
+        
+        # Remove flanking regions (30bp from each end)
+        if len(dna_sequence) <= 60:
+            raise Exception("Reference DNA sequence is too short (must be >60bp with flanking regions)")
+        
+        coding_sequence = dna_sequence[30:-30]
+        protein_sequence = self.translate_dna_to_protein(coding_sequence)
+        
+        return protein_sequence
+
+    def simple_pairwise_alignment(self, seq1, seq2):
+        """
+        Simple pairwise alignment using dynamic programming (Needleman-Wunsch-like)
+        Returns aligned sequences and alignment score
+        """
+        # Scoring parameters
+        match_score = 2
+        mismatch_penalty = -1
+        gap_penalty = -2
+        
+        len1, len2 = len(seq1), len(seq2)
+        
+        # Initialize scoring matrix
+        score_matrix = [[0 for _ in range(len2 + 1)] for _ in range(len1 + 1)]
+        
+        # Initialize first row and column with gap penalties
+        for i in range(1, len1 + 1):
+            score_matrix[i][0] = i * gap_penalty
+        for j in range(1, len2 + 1):
+            score_matrix[0][j] = j * gap_penalty
+        
+        # Fill the scoring matrix
+        for i in range(1, len1 + 1):
+            for j in range(1, len2 + 1):
+                if seq1[i-1] == seq2[j-1]:
+                    diagonal_score = score_matrix[i-1][j-1] + match_score
+                else:
+                    diagonal_score = score_matrix[i-1][j-1] + mismatch_penalty
+                
+                up_score = score_matrix[i-1][j] + gap_penalty
+                left_score = score_matrix[i][j-1] + gap_penalty
+                
+                score_matrix[i][j] = max(diagonal_score, up_score, left_score)
+        
+        # Traceback to get alignment
+        aligned_seq1, aligned_seq2 = [], []
+        i, j = len1, len2
+        
+        while i > 0 or j > 0:
+            current_score = score_matrix[i][j] if i > 0 and j > 0 else float('-inf')
+            up_score = score_matrix[i-1][j] if i > 0 else float('-inf')
+            left_score = score_matrix[i][j-1] if j > 0 else float('-inf')
+            diagonal_score = score_matrix[i-1][j-1] if i > 0 and j > 0 else float('-inf')
+            
+            if i > 0 and j > 0 and current_score == diagonal_score + (match_score if seq1[i-1] == seq2[j-1] else mismatch_penalty):
+                aligned_seq1.append(seq1[i-1])
+                aligned_seq2.append(seq2[j-1])
+                i -= 1
+                j -= 1
+            elif i > 0 and current_score == up_score + gap_penalty:
+                aligned_seq1.append(seq1[i-1])
+                aligned_seq2.append('-')
+                i -= 1
+            elif j > 0 and current_score == left_score + gap_penalty:
+                aligned_seq1.append('-')
+                aligned_seq2.append(seq2[j-1])
+                j -= 1
+            else:
+                # Fallback - should not happen in a correct implementation
+                if i > 0:
+                    aligned_seq1.append(seq1[i-1])
+                    i -= 1
+                else:
+                    aligned_seq1.append('-')
+                if j > 0:
+                    aligned_seq2.append(seq2[j-1])
+                    j -= 1
+                else:
+                    aligned_seq2.append('-')
+        
+        # Reverse the sequences (traceback gives them backwards)
+        aligned_seq1.reverse()
+        aligned_seq2.reverse()
+        
+        return ''.join(aligned_seq1), ''.join(aligned_seq2), score_matrix[len1][len2]
+
+    def find_mutations(self, reference_protein, variant_protein, variant_name):
+        """Find mutations between reference and variant protein sequences using alignment"""
+        try:
+            # Perform pairwise alignment
+            aligned_ref, aligned_var, alignment_score = self.simple_pairwise_alignment(reference_protein, variant_protein)
+            
+            # Calculate alignment quality (rough estimate)
+            alignment_length = len(aligned_ref)
+            if alignment_length == 0:
+                raise Exception("Alignment failed - no aligned positions")
+            
+            # Count matches (excluding gaps)
+            matches = sum(1 for a, b in zip(aligned_ref, aligned_var) if a == b and a != '-' and b != '-')
+            aligned_positions = sum(1 for a, b in zip(aligned_ref, aligned_var) if a != '-' and b != '-')
+            
+            if aligned_positions == 0:
+                raise Exception("No aligned positions found")
+            
+            identity = matches / aligned_positions
+            if identity < 0.3:  # Less than 30% identity might indicate poor alignment
+                raise Exception(f"Low sequence identity ({identity:.1%}) - possible alignment issue")
+            
+            # Extract mutations from aligned sequences
+            mutations = []
+            ref_position = 0  # Track position in original reference sequence (without gaps)
+            
+            for i, (ref_aa, var_aa) in enumerate(zip(aligned_ref, aligned_var)):
+                if ref_aa != '-':  # Only count positions that exist in reference
+                    ref_position += 1
+                    
+                    # Point mutation: both positions have amino acids and they're different
+                    if var_aa != '-' and ref_aa != var_aa:
+                        mutation = f"{ref_aa}{ref_position}{var_aa}"
+                        mutations.append(mutation)
+                    # Skip gaps and insertions in variant (we only want point mutations)
+            
+            return mutations, identity, alignment_length
+            
+        except Exception as e:
+            raise Exception(f"Alignment error: {str(e)}")
+
+    def extract_mutations(self):
+        """Main function to extract mutations from FASTA sequences using alignment"""
+        try:
+            # Validate inputs
+            if not self.fasta_path_var.get():
+                raise Exception("Please select a FASTA file")
+            
+            # Get reference protein sequence
+            self.status_label.configure(text="Processing reference sequence...", text_color="blue")
+            reference_protein = self.get_reference_protein_sequence()
+            
+            # Parse FASTA file
+            self.status_label.configure(text="Parsing FASTA file...", text_color="blue")
+            fasta_sequences = self.parse_fasta(self.fasta_path_var.get())
+            
+            if not fasta_sequences:
+                raise Exception("No sequences found in FASTA file")
+            
+            # Extract mutations for each sequence using alignment
+            mutation_lines = []
+            alignment_errors = []
+            alignment_info = []
+            
+            self.status_label.configure(text=f"Aligning and extracting mutations from {len(fasta_sequences)} sequence(s)...", text_color="blue")
+            
+            for i, (header, sequence) in enumerate(fasta_sequences):
+                try:
+                    mutations, identity, alignment_length = self.find_mutations(reference_protein, sequence, header)
+                    
+                    if mutations:
+                        mutation_line = ", ".join(mutations)
+                        mutation_lines.append(mutation_line)
+                    else:
+                        # No mutations found - sequence is identical to reference in aligned regions
+                        mutation_lines.append("")  # Empty line for identical sequences
+                    
+                    # Store alignment info for summary
+                    alignment_info.append(f"{header}: {len(mutations)} mutations, {identity:.1%} identity, {alignment_length} aligned positions")
+                        
+                except Exception as seq_error:
+                    alignment_errors.append(f"Sequence '{header}': {str(seq_error)}")
+            
+            # Show alignment errors if any
+            if alignment_errors:
+                error_msg = "The following sequences couldn't be aligned:\n\n" + "\n".join(alignment_errors)
+                
+                # Also show successful alignments for context
+                if alignment_info:
+                    error_msg += "\n\nSuccessful alignments:\n" + "\n".join(alignment_info)
+                
+                messagebox.showerror("Alignment Errors", error_msg)
+                
+                # Ask if user wants to continue with successfully processed sequences
+                if mutation_lines:
+                    continue_anyway = messagebox.askyesno(
+                        "Continue?", 
+                        f"Found {len(alignment_errors)} alignment error(s) and {len(mutation_lines)} successful extraction(s).\n\nDo you want to continue with the successfully extracted mutations?"
+                    )
+                    if not continue_anyway:
+                        return
+                else:
+                    return
+            
+            # Show alignment summary for successful extractions
+            if alignment_info and not alignment_errors:
+                summary_msg = f"Alignment Summary ({len(alignment_info)} sequences):\n\n" + "\n".join(alignment_info[:10])
+                if len(alignment_info) > 10:
+                    summary_msg += f"\n\n... and {len(alignment_info) - 10} more sequences"
+                messagebox.showinfo("Alignment Summary", summary_msg)
+            
+            # Transfer mutations to Input tab
+            if mutation_lines:
+                # Filter out empty lines (sequences with no mutations)
+                non_empty_lines = [line for line in mutation_lines if line.strip()]
+                
+                if non_empty_lines:
+                    input_page = self.controller.frames[InputPage]
+                    input_page.var_text.delete("1.0", "end")  # Clear existing content
+                    mutations_text = "\n".join(non_empty_lines)
+                    input_page.var_text.insert("1.0", mutations_text)
+                    
+                    total_mutations = sum(len(line.split(", ")) for line in non_empty_lines if line)
+                    self.status_label.configure(
+                        text=f"Extracted {total_mutations} mutations from {len(non_empty_lines)} variant(s) and transferred to Input tab", 
+                        text_color="green"
+                    )
+                    
+                    # Switch to Input tab automatically
+                    self.controller.show_frame(InputPage)
+                else:
+                    self.status_label.configure(text="No mutations found - all sequences are identical to reference in aligned regions", text_color="orange")
+            else:
+                self.status_label.configure(text="No mutations extracted", text_color="orange")
+                
+        except Exception as e:
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
 
 class GithubButton(ctk.CTkFrame):
     def __init__(self, master, url, text="GitHub", **kwargs):
