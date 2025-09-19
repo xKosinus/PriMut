@@ -1,7 +1,7 @@
 import customtkinter as ctk
 from customtkinter import DrawEngine
-DrawEngine.preferred_drawing_method = "polygon_shapes"  # Best for smooth corners
-from tkinter import simpledialog, ttk, scrolledtext, filedialog, messagebox
+DrawEngine.preferred_drawing_method = "polygon_shapes"
+from tkinter import simpledialog, filedialog, messagebox
 from pathlib import Path
 import json
 import re
@@ -11,57 +11,91 @@ import csv
 from typing import List, Tuple, Dict
 from collections import Counter, defaultdict
 import primer3
-import networkx as nx
+import webbrowser
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
-import webbrowser
+
+
+# Constants and Shared Data
+GENETIC_CODE = {
+    'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
+    'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
+    'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
+    'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
+    'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
+    'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
+    'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
+    'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
+    'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
+    'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
+    'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
+    'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
+    'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
+    'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
+    'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
+    'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G'
+}
+
+AMINO_ACID_MAP = {
+    'A': 'Ala', 'C': 'Cys', 'D': 'Asp', 'E': 'Glu', 'F': 'Phe',
+    'G': 'Gly', 'H': 'His', 'I': 'Ile', 'K': 'Lys', 'L': 'Leu',
+    'M': 'Met', 'N': 'Asn', 'P': 'Pro', 'Q': 'Gln', 'R': 'Arg',
+    'S': 'Ser', 'T': 'Thr', 'V': 'Val', 'W': 'Trp', 'Y': 'Tyr',
+    '*': 'Ter', 'X': 'Xxx'
+}
+
+# Utility Functions
+def translate_dna_to_protein(dna_sequence):
+    """Translate DNA sequence to protein sequence"""
+    protein = []
+    for i in range(0, len(dna_sequence) - 2, 3):
+        codon = dna_sequence[i:i+3]
+        protein.append(GENETIC_CODE.get(codon, 'X'))
+    return ''.join(protein)
+
+def get_three_letter_code(one_letter):
+    """Convert one-letter amino acid code to three-letter code"""
+    return AMINO_ACID_MAP.get(one_letter, 'Xxx')
+
+def parse_mutation(mut_str):
+    """Parse mutation string like 'A123B' into (original_aa, position, new_aa)"""
+    match = re.match(r'([A-Z])(\d+)([A-Z])', mut_str.strip())
+    if not match:
+        raise ValueError(f"Invalid mutation format: {mut_str}")
+    return match.group(1), int(match.group(2)), match.group(3)
+
+def mutation_position(mutation):
+    """Extract position from mutation string for sorting"""
+    matches = re.findall(r'\d+', mutation)
+    return int(matches[0]) if matches else 0
 
 
 class PrimerGenerator:
     """Site-directed mutagenesis primer generator with improved 3'-extension handling."""
 
     def __init__(self, flank_size_bases=30):
-        # Standard genetic code
-        self.codon_table = {
-            'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
-            'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-            'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
-            'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
-            'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
-            'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
-            'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
-            'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
-            'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
-            'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
-            'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-            'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
-            'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
-            'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
-            'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
-            'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G'
-        }
         self.stop_codons = {"TAA", "TAG", "TGA"}
-
+        
         # Reverse codon table
         self.aa_to_codons = defaultdict(list)
-        for codon, aa in self.codon_table.items():
+        for codon, aa in GENETIC_CODE.items():
             self.aa_to_codons[aa].append(codon)
 
         # Constants
         self.flank_size_bases = flank_size_bases
         self.flank_size_codons = flank_size_bases // 3
         self.MIN_PRIMER_LEN = 30
-        self.MIN_EXTENSION_LEN = 15  # Minimum 3'-extension length
+        self.MIN_EXTENSION_LEN = 15
         self.TARGET_TM = 68.0
         self.MIN_TM = 55.0
         self.MAX_TM_DIFF = 3.0
-        self.MAX_OVERLAP_LEN = 15  # Hard cap on overlap length
+        self.MAX_OVERLAP_LEN = 15
 
-    def check_sequence_validity(self, dna_sequence: str, flank_size: int = 30) -> bool:
+    def check_sequence_validity(self, dna_sequence, flank_size=30):
         """Validate DNA sequence structure and reading frame."""
         if len(dna_sequence) % 3 != 0:
             print(f"Error: Sequence length {len(dna_sequence)} is not a multiple of 3.")
@@ -83,41 +117,30 @@ class PrimerGenerator:
             print(f"Error: No valid stop codon before last {flank_size} bases, found '{stop_codon_pos}'.")
             return False
 
-        print("Sequence check passed ✓: correct ATG start and stop codon positions.")
+        print("Sequence check passed: correct ATG start and stop codon positions.")
         return True
 
-    @staticmethod
-    def _parse_mutation(mut_str: str) -> Tuple[str, int, str]:
-        """Parse mutation string like 'A123B' into (original_aa, position, new_aa)."""
-        match = re.match(r'([A-Z])(\d+)([A-Z])', mut_str.strip())
-        if not match:
-            raise ValueError(f"❌ Invalid mutation format: {mut_str}")
-        return match.group(1), int(match.group(2)), match.group(3)
-
-    def validate_mutations_against_sequence(self, dna_sequence: str, variant_list: List[List[str]]) -> None:
+    def validate_mutations_against_sequence(self, dna_sequence, variant_list):
         """Validate mutations against wildtype sequence."""
         for variant in variant_list:
             for mut in variant:
-                original_aa, pos, _ = self._parse_mutation(mut)
-
-                # Adjust position for flanking regions
+                original_aa, pos, _ = parse_mutation(mut)
                 adj_pos_codons = pos + self.flank_size_codons
                 codon_start = (adj_pos_codons - 1) * 3
                 codon_seq = dna_sequence[codon_start:codon_start + 3]
-
-                wt_aa = self.codon_table.get(codon_seq, 'X')
+                wt_aa = GENETIC_CODE.get(codon_seq, 'X')
                 if wt_aa != original_aa:
                     raise ValueError(
-                        f"❌ Mutation {mut} does not match WT residue '{wt_aa}' "
+                        f"Mutation {mut} does not match WT residue '{wt_aa}' "
                         f"at coding AA position {pos} (codon {codon_seq})"
                     )
 
-    def reverse_complement(self, sequence: str) -> str:
+    def reverse_complement(self, sequence):
         """Return reverse complement of DNA sequence."""
         complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
         return ''.join(complement[base] for base in sequence[::-1])
 
-    def calculate_tm(self, sequence: str) -> float:
+    def calculate_tm(self, sequence):
         """Calculate melting temperature using primer3."""
         if not sequence:
             return 0.0
@@ -127,7 +150,7 @@ class PrimerGenerator:
             print(f"Error calculating Tm for sequence '{sequence}': {e}")
             return 0.0
 
-    def get_best_codon(self, amino_acid: str, original_codon: str) -> str:
+    def get_best_codon(self, amino_acid, original_codon):
         """Get optimal codon for amino acid, preferring original if available."""
         codons = self.aa_to_codons.get(amino_acid, ["NNN"])
         return original_codon if original_codon in codons else codons[0]
@@ -142,7 +165,7 @@ class PrimerGenerator:
                 flat.append(group)
         return flat
 
-    def merge_close_mutations(self, mutations: List[Tuple[str, int, str]], max_distance_nt: int = 21) -> List[List[Tuple[str, int, str]]]:
+    def merge_close_mutations(self, mutations, max_distance_nt=21):
         sorted_muts = sorted(mutations, key=lambda x: x[1])
         if not sorted_muts:
             return []
@@ -160,7 +183,7 @@ class PrimerGenerator:
         merged.append(current_group)
         return merged
 
-    def _create_mutated_sequence(self, dna_sequence: str, mutations: List[Tuple[str, int, str]]) -> str:
+    def _create_mutated_sequence(self, dna_sequence, mutations):
         """Create mutated DNA sequence from list of mutations."""
         mutated_seq = list(dna_sequence)
 
@@ -169,8 +192,7 @@ class PrimerGenerator:
             original_codon = dna_sequence[idx:idx + 3]
             new_codon = self.get_best_codon(new_aa, original_codon)
 
-            # Verify original amino acid
-            if self.codon_table.get(original_codon, 'X') != aa:
+            if GENETIC_CODE.get(original_codon, 'X') != aa:
                 print(f"Warning: Original amino acid mismatch at position {pos}")
 
             mutated_seq[idx:idx + 3] = list(new_codon)
@@ -178,6 +200,7 @@ class PrimerGenerator:
         return ''.join(mutated_seq)
 
     def _find_optimal_overlap(self, mutated_seq, codon_starts, codon_ends):
+        # Implementation of overlap optimization logic
         min_inside_flank = 4
         crit_flank_limit = 2
         reverse_flank_weight = 2.0
@@ -194,6 +217,7 @@ class PrimerGenerator:
             best_score = -1e9
             best_start, best_end, best_tm = None, None, None
             best_flanks = (None, None)
+            
             for start_pos in range(0, seq_len - curr_len + 1):
                 end_pos = start_pos + curr_len
                 muts_inside = [m for m in mutation_positions if start_pos <= m < end_pos]
@@ -205,7 +229,6 @@ class PrimerGenerator:
                 reverse_flank = first_inside - start_pos
                 forward_flank = end_pos - (last_inside + 3)
 
-                # reject critical short flanks
                 if reverse_flank < crit_flank_limit or forward_flank < crit_flank_limit:
                     continue
 
@@ -241,12 +264,12 @@ class PrimerGenerator:
 
             return best_start, best_end, best_tm, best_flanks, best_score
 
-        # --- Stage 1: try exact MAX_OVERLAP_LEN ---
+        # Stage 1: try exact MAX_OVERLAP_LEN
         best_start, best_end, best_tm, (f_flank, r_flank), _ = search_len(self.MAX_OVERLAP_LEN)
         if best_start is not None and f_flank >= min_inside_flank and r_flank >= min_inside_flank:
             return best_start, best_end, best_tm
 
-        # --- Stage 2: allow +1 and +2 bases, pick best scoring ---
+        # Stage 2: allow +1 and +2 bases
         best_len_candidate = None
         best_len_score = -1e9
         for curr_len in [self.MAX_OVERLAP_LEN + 1, self.MAX_OVERLAP_LEN + 2]:
@@ -258,7 +281,7 @@ class PrimerGenerator:
         if best_len_candidate is not None:
             return best_len_candidate
 
-        # --- Fallback: center between first/last mutation ---
+        # Fallback: center between first/last mutation
         first_mut = min(mutation_positions)
         last_mut = max(mutation_positions)
         center = (first_mut + last_mut) // 2
@@ -267,63 +290,30 @@ class PrimerGenerator:
         best_tm = self.calculate_tm(mutated_seq[best_start:best_end])
         return best_start, best_end, best_tm
 
-
-
     def _extension_mutation_span(self, mutation_positions, overlap_start, overlap_end):
-        """
-        Helper: compute span of mutations outside the overlap.
-        Smaller = better.
-        """
+        """Helper: compute span of mutations outside the overlap."""
         outside = [pos for pos in mutation_positions if pos < overlap_start or pos >= overlap_end]
         if not outside:
             return 0
         return max(outside) - min(outside)
 
-    def _build_primer(self, mutated_seq: str, overlap_seq: str, extension_start: int,
-                      extension_direction: int, is_reverse: bool = False) -> Tuple[str, float]:
-        """Build primer ensuring min 3'-extension length."""
+    def _extend_primer_one_base(self, mutated_seq, current_primer, overlap_seq,
+                              extension_start, extension_end, is_reverse):
+        MAX_PRIMER_LEN = 45
 
-        if is_reverse:
-            extension_end = extension_start
-            extension_start = max(0, extension_end - self.MIN_EXTENSION_LEN)
-            extension_template = mutated_seq[extension_start:extension_end]
-            extension = self.reverse_complement(extension_template)
-            primer = self.reverse_complement(overlap_seq) + extension
-        else:
-            extension_end = min(len(mutated_seq), extension_start + self.MIN_EXTENSION_LEN)
-            extension = mutated_seq[extension_start:extension_end]
-            primer = overlap_seq + extension
-
-        tm = self.calculate_tm(primer)
-        return primer, tm
-
-    def _extend_primer_one_base(self, mutated_seq: str, current_primer: str, overlap_seq: str,
-                              extension_start: int, extension_end: int,
-                              is_reverse: bool) -> Tuple[str, float, int, int]:
-
-        MAX_PRIMER_LEN = 45  # define your max length here or use class attribute
-
-        # Calculate current primer length
-        current_len = len(current_primer)
-
-        # Prevent extension if max length reached
-        if current_len >= MAX_PRIMER_LEN:
+        if len(current_primer) >= MAX_PRIMER_LEN:
             return current_primer, self.calculate_tm(current_primer), extension_start, extension_end
 
         if is_reverse:
             if extension_start == 0:
-                # can't extend beyond start of sequence
                 return current_primer, self.calculate_tm(current_primer), extension_start, extension_end
-
             extension_start = max(0, extension_start - 1)
             extension_template = mutated_seq[extension_start:extension_end]
             extension = self.reverse_complement(extension_template)
             primer = self.reverse_complement(overlap_seq) + extension
         else:
             if extension_end >= len(mutated_seq):
-                # can't extend beyond end of sequence
                 return current_primer, self.calculate_tm(current_primer), extension_start, extension_end
-
             extension_end = min(len(mutated_seq), extension_end + 1)
             extension = mutated_seq[extension_start:extension_end]
             primer = overlap_seq + extension
@@ -331,21 +321,17 @@ class PrimerGenerator:
         tm = self.calculate_tm(primer)
         return primer, tm, extension_start, extension_end
 
-    def count_nt_changes(self, wt_seq: str, mutations: List[Tuple[str, int, str]]) -> int:
-        """Return the count of nucleotide changes vs wildtype after applying `mutations`."""
+    def count_nt_changes(self, wt_seq, mutations):
+        """Return the count of nucleotide changes vs wildtype after applying mutations."""
         mutated_seq = self._create_mutated_sequence(wt_seq, mutations)
-        return sum(1 for a,b in zip(wt_seq, mutated_seq) if a != b)
+        return sum(1 for a, b in zip(wt_seq, mutated_seq) if a != b)
 
-    def split_mutations_by_max_nt_changes(
-        self, wt_seq: str, mutation_group: List[Tuple[str, int, str]], max_nt_changes: int = 6
-    ) -> List[List[Tuple[str, int, str]]]:
-        """
-        Split mutation group so that each group does not exceed max_nt_changes.
-        Ensures codon-aware splits. Mutations are grouped as required to stay under the threshold.
-        """
+    def split_mutations_by_max_nt_changes(self, wt_seq, mutation_group, max_nt_changes=6):
+        """Split mutation group so that each group does not exceed max_nt_changes."""
         sorted_mutations = sorted(mutation_group, key=lambda m: m[1])
         split_groups = []
         current_group = []
+        
         for mut in sorted_mutations:
             test_list = current_group + [mut]
             if self.count_nt_changes(wt_seq, test_list) > max_nt_changes:
@@ -354,36 +340,31 @@ class PrimerGenerator:
                 current_group = [mut]
             else:
                 current_group.append(mut)
+                
         if current_group:
             split_groups.append(current_group)
         return split_groups
 
-    def generate_primers_for_construct(self, dna_sequence: str, mutations: List[Tuple[str, int, str]]) -> List[Dict]:
+    def generate_primers_for_construct(self, dna_sequence, mutations):
         mutations = self.flatten_mutations(mutations)
         primer_sets = []
         mutation_groups = self.merge_close_mutations(mutations)
 
         MAX_PRIMER_LEN = 45
-        MAX_MUT_NT = 6  # Maximum nucleotide changes per primer pair
+        MAX_MUT_NT = 6
 
         for group in mutation_groups:
-            # Split groups if nucleotide changes exceed max allowed per primer
             split_groups = self.split_mutations_by_max_nt_changes(dna_sequence, group, MAX_MUT_NT)
             previous_sub_group = []
 
             for i, sub_group in enumerate(split_groups):
-                # Determine codon starts/ends for current mutations
                 codon_starts_sub = [((m[1] - 1) + self.flank_size_codons) * 3 for m in sub_group]
                 codon_ends_sub = [start + 3 for start in codon_starts_sub]
 
-                # --- Accumulate previous mutations ---
                 all_applied_muts = previous_sub_group + sub_group
-                # Create mutated sequence including all previous mutations
                 mutated_seq = self._create_mutated_sequence(dna_sequence, all_applied_muts)
 
-                # Find optimal overlap for these mutations
                 overlap_start, overlap_end, _ = self._find_optimal_overlap(mutated_seq, codon_starts_sub, codon_ends_sub)
-
                 overlap_seq = mutated_seq[overlap_start:overlap_end]
 
                 # Forward primer initial design
@@ -399,15 +380,14 @@ class PrimerGenerator:
                 reverse_primer = self.reverse_complement(overlap_seq) + self.reverse_complement(reverse_template)
                 reverse_tm = self.calculate_tm(reverse_primer)
 
-                # Balance primer Tm with incremental extension
+                # Balance primer Tm
                 tm_diff = abs(forward_tm - reverse_tm)
                 attempts = 0
                 max_attempts = 30
-                while (
-                    (tm_diff > self.MAX_TM_DIFF) or
-                    (forward_tm < self.TARGET_TM) or
-                    (reverse_tm < self.TARGET_TM)
-                ) and attempts < max_attempts:
+                
+                while ((tm_diff > self.MAX_TM_DIFF) or (forward_tm < self.TARGET_TM) or 
+                       (reverse_tm < self.TARGET_TM)) and attempts < max_attempts:
+                    
                     if forward_tm < reverse_tm and len(forward_primer) < MAX_PRIMER_LEN:
                         forward_primer, forward_tm, forward_start, forward_end = self._extend_primer_one_base(
                             mutated_seq, forward_primer, overlap_seq, forward_start, forward_end, is_reverse=False)
@@ -419,25 +399,17 @@ class PrimerGenerator:
                     tm_diff = abs(forward_tm - reverse_tm)
                     attempts += 1
 
-                # Combine previous_sub_group + sub_group uniquely by mutation identity (aa, pos, new_aa)
-                all_mut_set = { (m[0], m[1], m[2]) for m in previous_sub_group + sub_group }
+                all_mut_set = {(m[0], m[1], m[2]) for m in previous_sub_group + sub_group}
                 all_mut_list = sorted(all_mut_set, key=lambda x: x[1])
-
-                # Create a unique ID string for this primer set from all covered mutations
                 set_id = "_".join([f"{m[0]}{m[1]}{m[2]}" for m in all_mut_list])
 
-                # Determine dependency: for the first primer set, no dependencies
-                if len(primer_sets) == 0:
-                    depends_on = []
-                else:
-                    # Depend on the immediate previous primer set
-                    depends_on = [primer_sets[-1]['set_id']]
+                depends_on = [] if len(primer_sets) == 0 else [primer_sets[-1]['set_id']]
 
                 primer_sets.append({
                     'set_id': set_id,
                     'depends_on': depends_on,
-                    'mutations': [f"{m[0]}{m[1]}{m[2]}" for m in sub_group],  # current subgroup mutations
-                    'all_covered_mutations': [f"{m[0]}{m[1]}{m[2]}" for m in all_mut_list],  # total mutations in primer sequence
+                    'mutations': [f"{m[0]}{m[1]}{m[2]}" for m in sub_group],
+                    'all_covered_mutations': [f"{m[0]}{m[1]}{m[2]}" for m in all_mut_list],
                     'overlap_sequence': overlap_seq,
                     'overlap_tm': self.calculate_tm(overlap_seq),
                     'forward_primer': forward_primer,
@@ -454,9 +426,7 @@ class PrimerGenerator:
 
         return primer_sets
 
-
-
-    def save_primer_list(self, primer_data: List[Dict], output_dir: str = None, filename: str = "primer_list.txt") -> None:
+    def save_primer_list(self, primer_data, output_dir=None, filename="primer_list.txt"):
         """Save primer data to text and CSV files."""
         if output_dir is None:
             output_dir = os.path.expanduser("~/Mutagenesis")
@@ -522,7 +492,7 @@ class PrimerGenerator:
 
         print(f"Primer files saved:\n  - {filepath_txt}\n  - {filepath_csv}")
 
-    def save_primer_data_json(self, primer_data: List[Dict], output_dir: str = None, filename: str = "primer_list.json") -> None:
+    def save_primer_data_json(self, primer_data, output_dir=None, filename="primer_list.json"):
         """Save primer data as JSON."""
         if output_dir is None:
             output_dir = os.path.expanduser("~/Mutagenesis")
@@ -536,20 +506,9 @@ class PrimerGenerator:
         print(f"Primer JSON saved to {filepath_json}")
 
 
-# MutagenesisProtocol...
-
 class MutagenesisProtocol:
-    def __init__(
-        self,
-        variant_input,
-        max_mutations_per_step,
-        variant_prefix,
-        output_dir_path,
-        start_col=2,
-        start_row=16,
-        list_existing_as_steps=False,
-        undo_stack=None
-    ):
+    def __init__(self, variant_input, max_mutations_per_step, variant_prefix, output_dir_path,
+                 start_col=2, start_row=16, list_existing_as_steps=False, undo_stack=None):
         self.variant_input = variant_input
         self.max_mutations_per_step = max_mutations_per_step
         self.variant_prefix = variant_prefix
@@ -565,13 +524,8 @@ class MutagenesisProtocol:
         self.undo_stack = undo_stack if undo_stack is not None else []
 
     @staticmethod
-    def mutation_pos(mutation):
-        matches = re.findall(r'\d+', mutation)
-        return int(matches[0]) if matches else 0
-
-    @staticmethod
     def variant_key(mutations):
-        return ','.join(sorted(mutations, key=MutagenesisProtocol.mutation_pos))
+        return ','.join(sorted(mutations, key=mutation_position))
 
     @staticmethod
     def extract_variant_number(name):
@@ -590,84 +544,6 @@ class MutagenesisProtocol:
                 best = var
         return best
 
-    def design_primer_pathways(self, primer_list, target_variants):
-        """
-        Design optimal mutagenesis pathways using available primers.
-        Only selects primers whose 'all_covered_mutations' are a subset of target mutations.
-
-        primer_list: list of primers loaded from primer_list.json
-        target_variants: list of target mutation sets, e.g., [["S19V"], ["P423F", "Q424V"]]
-        Returns: list of workflows for each target variant
-        """
-        all_workflows = []
-
-        for variant_idx, target_mutations in enumerate(target_variants):
-            print(f"\nProcessing variant {variant_idx + 1}: {', '.join(target_mutations)}")
-
-            steps = []
-            target_muts = set(self.normalize_mut(m) for m in target_mutations)
-            primer_map = {p['set_id']: p for p in primer_list}
-            used_primers = []
-            remaining_muts = target_muts.copy()
-
-            def add_primer_with_deps(primer_id):
-                # Recursively add dependencies first
-                for dep in primer_map[primer_id].get('depends_on', []):
-                    if dep not in used_primers:
-                        add_primer_with_deps(dep)
-                if primer_id not in used_primers:
-                    used_primers.append(primer_id)
-                    primer_info = primer_map[primer_id]
-                    step_muts = [self.normalize_mut(m) for m in primer_info['all_covered_mutations']]
-                    mutations_added = [self.normalize_mut(m) for m in primer_info['mutations']]
-                    steps.append({
-                        'primer_id': primer_id,
-                        'primer_info': primer_info,
-                        'all_covered_mutations': step_muts,
-                        'mutations_added': mutations_added
-                    })
-                    remaining_muts.difference_update(mutations_added)
-
-            while remaining_muts:
-                # Find primers that only introduce mutations we want (subset of target)
-                # and cover the most remaining mutations
-                candidates = []
-                for p in primer_list:
-                    primer_all_muts = set(self.normalize_mut(m) for m in p['all_covered_mutations'])
-
-                    # CRITICAL: Only consider primers whose all_covered_mutations are subset of target
-                    if not primer_all_muts.issubset(target_muts):
-                        continue
-
-                    new_coverage = primer_all_muts & remaining_muts
-                    if new_coverage:
-                        candidates.append((p['set_id'], len(new_coverage), primer_all_muts, len(primer_all_muts)))
-
-                if not candidates:
-                    print(f"❌ Cannot cover remaining mutations: {remaining_muts}")
-                    print("❌ No primers available that only introduce target mutations")
-                    raise RuntimeError("Cannot cover all mutations with available primers that don't introduce unwanted mutations.")
-
-                # Sort by: coverage of remaining mutations (desc), then total mutations (desc)
-                candidates.sort(key=lambda x: (x[1], x[3]), reverse=True)
-                best_primer_id = candidates[0][0]
-
-                print(f"  Selected primer {best_primer_id} (covers {candidates[0][1]} remaining mutations)")
-                add_primer_with_deps(best_primer_id)
-
-            # Print the workflow
-            print(f"\nWorkflow for variant {variant_idx + 1}:")
-            print("Step  |  Primer Set  |  Mutations Added  |  All Covered")
-            print("-" * 70)
-            for step_num, step in enumerate(steps, 1):
-                added_str = ', '.join(step['mutations_added'])
-                covered_str = ', '.join(step['all_covered_mutations'])
-                print(f"{step_num:2d}    |  {step['primer_id']:15s}  |  {added_str:15s}  |  {covered_str}")
-
-            all_workflows.append(steps)
-
-        return all_workflows
-    
     def save_protocol_json(self, protocol_by_round, final_variants, existing_input_variants, 
                           variant_to_label_map, variant_to_final_variant, used_variants):
         """Save protocol data to JSON for GUI display"""
@@ -680,7 +556,7 @@ class MutagenesisProtocol:
         
         # Final variants overview
         for label in sorted(variant_to_label_map, key=self.extract_variant_number):
-            sorted_mutations = sorted(variant_to_label_map[label], key=self.mutation_pos)
+            sorted_mutations = sorted(variant_to_label_map[label], key=mutation_position)
             protocol_data["final_variants_overview"][label] = {
                 "final_variant": variant_to_final_variant[label],
                 "mutations": sorted_mutations
@@ -691,7 +567,7 @@ class MutagenesisProtocol:
             steps = sorted(protocol_by_round[round_num], key=lambda r: self.extract_variant_number(r[1]))
             step_data = []
             for row in steps:
-                sorted_muts = sorted(row[2].split(', '), key=self.mutation_pos)
+                sorted_muts = sorted(row[2].split(', '), key=mutation_position)
                 step_data.append({
                     "new_variant": row[0],
                     "parent_variant": row[1], 
@@ -710,18 +586,10 @@ class MutagenesisProtocol:
         with open(protocol_json_path, "w") as f:
             json.dump(protocol_data, f, indent=2)
         
-        print(f"✅ Protocol data saved: {protocol_json_path}")
+        print(f"Protocol data saved: {protocol_json_path}")
 
-    def generate_pdf(
-        self,
-        protocol_by_round,
-        final_variants,
-        filename,
-        existing_input_variants,
-        variant_to_label_map,
-        variant_to_final_variant,
-        used_variants
-    ):
+    def generate_pdf(self, protocol_by_round, final_variants, filename, existing_input_variants,
+                    variant_to_label_map, variant_to_final_variant, used_variants):
         doc = SimpleDocTemplate(filename, pagesize=A4)
         elements = []
         styles = getSampleStyleSheet()
@@ -754,9 +622,10 @@ class MutagenesisProtocol:
         elements.append(Paragraph("<b>Final Variants Overview</b>", styles['Heading2']))
         final_table_data = [['Input Label', 'Final Variant', 'Mutations']]
         for label in sorted(variant_to_label_map, key=self.extract_variant_number):
-            sorted_mutations = sorted(variant_to_label_map[label], key=self.mutation_pos)
+            sorted_mutations = sorted(variant_to_label_map[label], key=mutation_position)
             mut_paragraph = Paragraph(', '.join(sorted_mutations), cell_style)
             final_table_data.append([label, variant_to_final_variant[label], mut_paragraph])
+        
         table = Table(final_table_data, colWidths=[100, 100, 260], repeatRows=1)
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -771,8 +640,9 @@ class MutagenesisProtocol:
             elements.append(Paragraph(f"<b>Step {i}</b>", styles['Heading3']))
             table_data = [['New Variant', 'Parent Variant', 'Mutations Added']]
             for row in steps:
-                sorted_muts = ', '.join(sorted(row[2].split(', '), key=self.mutation_pos))
+                sorted_muts = ', '.join(sorted(row[2].split(', '), key=mutation_position))
                 table_data.append([row[0], row[1], Paragraph(sorted_muts, cell_style)])
+            
             step_table = Table(table_data, colWidths=[100, 120, 160], repeatRows=1)
             step_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -788,6 +658,7 @@ class MutagenesisProtocol:
             mut_text = ', '.join(muts) if muts else '(none)'
             mut_paragraph = Paragraph(mut_text, cell_style)
             all_variants_data.append([name, mut_paragraph])
+            
         table = Table(all_variants_data, colWidths=[140, 320], repeatRows=1)
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -799,86 +670,6 @@ class MutagenesisProtocol:
         elements.append(table)
 
         doc.build(elements)
-
-    def generate_label_pdf(self, variants, start_col, start_row, base_dir):
-        base_dir = Path(base_dir)
-        variant_json_file = base_dir / "protocols" / "variant_databank.json"
-        pdf_output_file = base_dir / "protocols" / "herma_10900_labels.pdf"
-
-        page_width, page_height = A4
-        label_width = 25.3 * mm
-        label_height = 9.9 * mm
-        horizontal_spacing = 2.5 * mm
-        top_margin = 13.5 * mm
-        left_margin = 10.3 * mm
-        columns = 7
-        rows = 27
-        font_size = 5.5
-
-        def variant_to_key(mutations):
-            return ','.join(sorted(mutations, key=self.mutation_pos))
-
-        with open(variant_json_file, "r") as f:
-            variant_data = json.load(f)
-
-        def mutations_str_to_set(mutation_str):
-            if mutation_str == '(none)':
-                return set()
-            return set(mutation_str.split(','))
-
-        input_mutation_sets = [set(v) for v in variants]
-        selected_variants = []
-        for label, mutation_str in variant_data.items():
-            variant_mut_set = mutations_str_to_set(mutation_str)
-            if any(variant_mut_set.issubset(inp_set) for inp_set in input_mutation_sets):
-                selected_variants.append(label)
-
-        def variant_sort_key(label):
-            match = re.search(r'\D+(\d+)$', label)
-            return int(match.group(1)) if match else 0
-
-        selected_variants = sorted(selected_variants, key=variant_sort_key)
-        c = canvas.Canvas(str(pdf_output_file), pagesize=A4)
-        c.setFont("Helvetica", font_size)
-
-        label_index = 0
-        total_labels = len(selected_variants)
-        page_number = 1
-
-        current_start_col = start_col
-        current_start_row = start_row
-
-        while label_index < total_labels:
-            for row in range(rows):
-                for col in range(columns):
-                    if page_number == 1:
-                        if row < current_start_row or (row == current_start_row and col < current_start_col):
-                            continue
-                    if label_index >= total_labels:
-                        break
-
-                    x = left_margin + col * (label_width + horizontal_spacing)
-                    y = page_height - top_margin - (row + 1) * label_height
-
-                    label = selected_variants[label_index]
-                    text_x = x + label_width / 2
-                    text_y = y + label_height / 2 - font_size / 2
-
-                    c.drawCentredString(text_x, text_y, label)
-                    label_index += 1
-
-                if label_index >= total_labels:
-                    break
-
-            if label_index < total_labels:
-                c.showPage()
-                c.setFont("Helvetica", font_size)
-                page_number += 1
-                current_start_row = 0
-                current_start_col = 0
-
-        c.save()
-        print(f"✅ PDF with labels generated: {pdf_output_file}")
 
     def run(self):
         # Check primer JSON exists
@@ -892,12 +683,11 @@ class MutagenesisProtocol:
         primer_groups = {}
         for idx, primer_set in enumerate(primer_data):
             group_muts = [self.normalize_mut(m) for m in primer_set["mutations"]]
-            primer_groups[idx] = sorted(group_muts, key=self.mutation_pos)
+            primer_groups[idx] = sorted(group_muts, key=mutation_position)
             for mut in group_muts:
                 mutation_to_groups.setdefault(mut, []).append(idx)
 
         if self.list_existing_as_steps:
-            # SKIP DATABANK: Start fresh, only wildtype is "existing"
             variant_databank = {}
             existing_variants = {(): 'wildtype'}
         else:
@@ -907,10 +697,11 @@ class MutagenesisProtocol:
                         content = f.read().strip()
                         variant_databank = json.loads(content) if content else {}
                 except json.JSONDecodeError:
-                    print("⚠️ Warning: Databank file invalid. Starting fresh.")
+                    print("Warning: Databank file invalid. Starting fresh.")
                     variant_databank = {}
             else:
                 variant_databank = {}
+            
             existing_variants = {(): 'wildtype'}
             for key, mutation_str in variant_databank.items():
                 muts = tuple(mutation_str.split(',')) if mutation_str != '(none)' else ()
@@ -919,11 +710,6 @@ class MutagenesisProtocol:
         all_mutations = [mut for v in self.variant_input for mut in v]
         mutation_freq = Counter(all_mutations)
         variants = [sorted(v, key=lambda x: -mutation_freq[x]) for v in self.variant_input]
-
-        existing_variants = {(): 'wildtype'}
-        for key, mutation_str in variant_databank.items():
-            muts = tuple(mutation_str.split(',')) if mutation_str != '(none)' else ()
-            existing_variants[muts] = key
 
         final_variants = defaultdict(list)
         variant_to_label_map = {}
@@ -947,11 +733,9 @@ class MutagenesisProtocol:
                     continue
                 else:
                     # Force regenerate a full protocol path as if it's new
-                    # Remove the exact match from existing_variants so planning will run
                     for muts in list(existing_variants.keys()):
                         if self.variant_key(muts) == variant_key_str:
                             del existing_variants[muts]
-                    # do NOT 'continue' here — fall through to full mutation batching logic
 
             base_variant = self.get_base_variant(target, existing_variants)
             current_mutations = list(base_variant)
@@ -992,7 +776,7 @@ class MutagenesisProtocol:
 
                 test_mutations = sorted(
                     set(map(self.normalize_mut, current_mutations)) | set(batch_muts),
-                    key=self.mutation_pos
+                    key=mutation_position
                 )
                 test_sorted = tuple(test_mutations)
 
@@ -1011,7 +795,7 @@ class MutagenesisProtocol:
             final_variants[base_name].append(target)
             variant_to_label_map[variant_label] = target
             variant_to_final_variant[variant_label] = base_name
-            used_variants[tuple(sorted(map(self.normalize_mut, target), key=self.mutation_pos))] = base_name
+            used_variants[tuple(sorted(map(self.normalize_mut, target), key=mutation_position))] = base_name
 
         self.generate_pdf(
             protocol_by_round, final_variants, str(self.pdf_path),
@@ -1027,7 +811,7 @@ class MutagenesisProtocol:
         existing_ids = [int(v_id[-2:]) for v_id in variant_databank if v_id.startswith(self.variant_prefix)]
         next_id_num = max(existing_ids, default=0) + 1
         for muts, name in existing_variants.items():
-            mutation_str = ','.join(sorted(muts, key=self.mutation_pos))
+            mutation_str = ','.join(sorted(muts, key=mutation_position))
             if mutation_str not in variant_databank.values():
                 new_id = f"{self.variant_prefix}{next_id_num:02d}"
                 variant_databank[new_id] = mutation_str
@@ -1042,7 +826,7 @@ class MutagenesisProtocol:
                     current_state = {}
             self.undo_stack.append(copy.deepcopy(current_state))
         else:
-            self.undo_stack.append({})  # empty dict if file does not exist
+            self.undo_stack.append({})
 
         if not self.list_existing_as_steps:
             with open(self.databank_file, "w") as f:
@@ -1052,17 +836,108 @@ class MutagenesisProtocol:
         with open(databank_file, 'w') as f:
             json.dump(variant_databank, f, indent=2)
 
-        print(f"✅ PDF generated: {self.pdf_path}")
-        print(f"📁 Databank updated: {self.databank_file}")
-
-        self.generate_label_pdf(self.variant_input, self.start_col, self.start_row, self.mutagenesis_dir)
+        print(f"PDF generated: {self.pdf_path}")
+        print(f"Databank updated: {self.databank_file}")
 
 
+# Tkinter GUI Classes
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
-#Tkinter GUI
-# Set appearance mode and theme
-ctk.set_appearance_mode("dark")  # "dark", "light", or "system"
-ctk.set_default_color_theme("blue")  # "blue", "dark-blue", or "green"
+
+class PlaceholderTextbox(ctk.CTkTextbox):
+    def __init__(self, master, placeholder, placeholder_fg="gray", text_fg="white", **kwargs):
+        super().__init__(master, **kwargs)
+        self.placeholder = placeholder
+        self.placeholder_fg = placeholder_fg
+        self.text_fg = text_fg
+        self.insert("1.0", self.placeholder)
+        self.configure(text_color=self.placeholder_fg)
+        self.bind("<FocusIn>", self._clear_placeholder)
+        self.bind("<FocusOut>", self._show_placeholder)
+
+    def _clear_placeholder(self, event=None):
+        text = self.get("1.0", "end").strip()
+        if text == self.placeholder:
+            self.delete("1.0", "end")
+            self.configure(text_color=self.text_fg)
+
+    def _show_placeholder(self, event=None):
+        text = self.get("1.0", "end").strip()
+        if text == "":
+            self.insert("1.0", self.placeholder)
+            self.configure(text_color=self.placeholder_fg)
+
+
+class GithubButton(ctk.CTkFrame):
+    def __init__(self, master, url, text="GitHub", **kwargs):
+        super().__init__(master, **kwargs)
+        self.url = url
+        self.button = ctk.CTkButton(self, text=text, command=self.open_link, fg_color="#222", text_color="white")
+        self.button.pack(fill="x", padx=2, pady=2)
+
+    def open_link(self):
+        webbrowser.open(self.url)
+
+
+class BaseProteinPage:
+    """Base class for protein-related pages to avoid code duplication"""
+    
+    def format_protein_sequence(self, sequence, format_type="1-letter", residues_per_line=60):
+        """Format protein sequence for display"""
+        if format_type == "1-letter":
+            lines = []
+            for i in range(0, len(sequence), residues_per_line):
+                line_seq = sequence[i:i+residues_per_line]
+                formatted_line = ""
+                for j in range(0, len(line_seq), 10):
+                    formatted_line += line_seq[j:j+10] + " "
+                lines.append(f"{i+1:>4}: {formatted_line.strip()}")
+            return '\n'.join(lines)
+
+        elif format_type == "3-letter":
+            three_letter = [get_three_letter_code(aa) for aa in sequence]
+            lines = []
+            residues_per_line_3letter = 20
+            for i in range(0, len(three_letter), residues_per_line_3letter):
+                line_seq = three_letter[i:i+residues_per_line_3letter]
+                lines.append(f"{i+1:>4}: {'-'.join(line_seq)}")
+            return '\n'.join(lines)
+
+        elif format_type == "Both":
+            result = "=== One-Letter Code ===\n"
+            result += self.format_protein_sequence(sequence, "1-letter") + "\n\n"
+            result += "=== Three-Letter Code ===\n"
+            result += self.format_protein_sequence(sequence, "3-letter")
+            return result
+
+        elif format_type == "FASTA":
+            header = ">Wildtype_Protein|Length=" + str(len(sequence))
+            lines = [header]
+            for i in range(0, len(sequence), 60):
+                lines.append(sequence[i:i+60])
+            return '\n'.join(lines)
+
+        return sequence
+
+    def apply_mutations_to_protein(self, wt_protein, mutation_str):
+        """Apply mutations to protein sequence"""
+        protein_list = list(wt_protein)
+        mutations = mutation_str.split(',') if mutation_str else []
+        for mut in mutations:
+            mut = mut.strip()
+            if not mut:
+                continue
+            m = re.match(r'([A-Z])(\d+)([A-Z])', mut)
+            if m:
+                orig_aa, pos, new_aa = m.group(1), int(m.group(2)), m.group(3)
+                idx = pos - 1
+                if 0 <= idx < len(protein_list):
+                    if protein_list[idx] != orig_aa:
+                        print(f"Warning: WT AA at position {pos} is {protein_list[idx]}, expected {orig_aa}")
+                    protein_list[idx] = new_aa
+        return "".join(protein_list)
+
 
 class MutagenesisApp(ctk.CTk):
     def __init__(self):
@@ -1088,7 +963,7 @@ class MutagenesisApp(ctk.CTk):
         nav_frame.grid_propagate(False)
         nav_frame.grid_columnconfigure(0, weight=1)
 
-        # Updated navigation buttons to include Mutation Extractor
+        # Navigation buttons
         nav_buttons = [
             ("User Input", InputPage),
             ("Variant Databank", DatabankPage),
@@ -1096,7 +971,7 @@ class MutagenesisApp(ctk.CTk):
             ("Variant Proteins", VariantProteinPage),
             ("Protocol Results", ProtocolResultsPage),
             ("Primer", PrimerPage),
-            ("Mutation Extractor", MutationExtractorPage)  # New tab
+            ("Mutation Extractor", MutationExtractorPage)
         ]
 
         num_nav_buttons = len(nav_buttons)
@@ -1116,9 +991,12 @@ class MutagenesisApp(ctk.CTk):
         container.grid_columnconfigure(0, weight=1)
         container.grid_rowconfigure(0, weight=1)
 
-        # Updated frames list to include MutationExtractorPage
+        # Initialize frames
         self.frames = {}
-        for F in (InputPage, MutationExtractorPage, DatabankPage, WildtypeProteinPage, VariantProteinPage, ProtocolResultsPage, PrimerPage):
+        page_classes = [InputPage, MutationExtractorPage, DatabankPage, WildtypeProteinPage, 
+                       VariantProteinPage, ProtocolResultsPage, PrimerPage]
+        
+        for F in page_classes:
             frame = F(container, self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
@@ -1152,28 +1030,6 @@ class MutagenesisApp(ctk.CTk):
         with open(path, "w") as f:
             json.dump(databank, f, indent=2)
 
-class PlaceholderTextbox(ctk.CTkTextbox):
-    def __init__(self, master, placeholder, placeholder_fg="gray", text_fg="white", **kwargs):
-        super().__init__(master, **kwargs)
-        self.placeholder = placeholder
-        self.placeholder_fg = placeholder_fg
-        self.text_fg = text_fg
-        self.insert("1.0", self.placeholder)
-        self.configure(text_color=self.placeholder_fg)
-        self.bind("<FocusIn>", self._clear_placeholder)
-        self.bind("<FocusOut>", self._show_placeholder)
-
-    def _clear_placeholder(self, event=None):
-        text = self.get("1.0", "end").strip()
-        if text == self.placeholder:
-            self.delete("1.0", "end")
-            self.configure(text_color=self.text_fg)
-
-    def _show_placeholder(self, event=None):
-        text = self.get("1.0", "end").strip()
-        if text == "":
-            self.insert("1.0", self.placeholder)
-            self.configure(text_color=self.placeholder_fg)
 
 class InputPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -1181,34 +1037,42 @@ class InputPage(ctk.CTkFrame):
         self.controller = controller
         
         # Configure grid weights for responsive layout
-        self.grid_columnconfigure(0, weight=0, minsize=200)  # Label column
-        self.grid_columnconfigure(1, weight=1)  # Input column
-        self.grid_columnconfigure(2, weight=0)  # Button column
-        self.grid_rowconfigure(5, weight=1)  # Variant mutations row (expandable)
+        self.grid_columnconfigure(0, weight=0, minsize=200)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=0)
+        self.grid_rowconfigure(5, weight=1)
 
         # Initialize sequence management variables
         self.sequence_undo_stack = []
 
         # Title label
-        title = ctk.CTkLabel(self,
-                             text="Mutagenesis Input",
-                             corner_radius=10,
-                             fg_color="#4a90e2",
-                             text_color="white",
-                             font=controller.LARGEFONT,
-                             height=50)
+        self.create_title_section()
+        self.create_output_directory_section()
+        self.create_dna_sequence_section()
+        self.create_sequence_management_buttons()
+        self.create_mutations_section()
+        self.create_parameters_section()
+        self.create_action_buttons()
+        self.create_status_section()
+
+    def create_title_section(self):
+        title = ctk.CTkLabel(self, text="Mutagenesis Input", corner_radius=10,
+                             fg_color="#4a90e2", text_color="white", 
+                             font=self.controller.LARGEFONT, height=50)
         title.grid(row=0, column=0, padx=10, pady=20, columnspan=3, sticky="ew")
 
-        # Output directory input
-        ctk.CTkLabel(self, text="Output Directory:", font=controller.MEDIUMFONT).grid(
+    def create_output_directory_section(self):
+        ctk.CTkLabel(self, text="Output Directory:", font=self.controller.MEDIUMFONT).grid(
             row=1, column=0, sticky="w", padx=10, pady=5)
-        self.output_dir_entry = ctk.CTkEntry(self, textvariable=controller.output_dir)
+        
+        self.output_dir_entry = ctk.CTkEntry(self, textvariable=self.controller.output_dir)
         self.output_dir_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
+        
         select_dir_btn = ctk.CTkButton(self, text="Choose...", command=self.select_output_dir, width=70)
         select_dir_btn.grid(row=1, column=2, sticky="w", padx=5, pady=5)
 
-        # Label for DNA sequence input
-        ctk.CTkLabel(self, text="Wildtype DNA Sequence:", font=controller.MEDIUMFONT).grid(
+    def create_dna_sequence_section(self):
+        ctk.CTkLabel(self, text="Wildtype DNA Sequence:", font=self.controller.MEDIUMFONT).grid(
             row=2, column=0, sticky="nw", padx=10, pady=(15, 0))
 
         # Frame for DNA sequence input and info button
@@ -1216,35 +1080,30 @@ class InputPage(ctk.CTkFrame):
         seq_frame.grid(row=2, column=1, columnspan=2, pady=5, padx=5, sticky="ew")
         seq_frame.grid_columnconfigure(0, weight=1)
 
-        # DNA sequence input textbox inside frame
-        self.seq_text = PlaceholderTextbox(
-            seq_frame,
-            placeholder="Enter wildtype DNA sequence here...",
-            placeholder_fg="gray",
-            text_fg="white",
-            height=120)
+        self.seq_text = PlaceholderTextbox(seq_frame, placeholder="Enter wildtype DNA sequence here...",
+                                          placeholder_fg="gray", text_fg="white", height=150)
         self.seq_text.grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
-        # Info button inside frame, same row as textbox, next column
-        question_seq_btn = ctk.CTkButton(seq_frame, text="?", width=30, height=30, command=self.show_info_sequence)
+        question_seq_btn = ctk.CTkButton(seq_frame, text="?", width=30, height=30, 
+                                        command=self.show_info_sequence)
         question_seq_btn.grid(row=0, column=1, sticky="ne", pady=5)
 
-        # Sequence management buttons frame
+    def create_sequence_management_buttons(self):
         seq_buttons_frame = ctk.CTkFrame(self)
         seq_buttons_frame.grid(row=3, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
         
-        save_seq_btn = ctk.CTkButton(seq_buttons_frame, text="Save Sequence", command=self.save_sequence)
-        save_seq_btn.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        buttons = [
+            ("Save Sequence", self.save_sequence),
+            ("Load/Manage Sequences", self.load_manage_sequences),
+            ("Undo Sequence Changes", self.undo_sequence_changes)
+        ]
         
-        load_seq_btn = ctk.CTkButton(seq_buttons_frame, text="Load/Manage Sequences", command=self.load_manage_sequences)
-        load_seq_btn.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        for i, (text, command) in enumerate(buttons):
+            btn = ctk.CTkButton(seq_buttons_frame, text=text, command=command)
+            btn.grid(row=0, column=i, padx=10, pady=5, sticky="w")
 
-        undo_seq_btn = ctk.CTkButton(seq_buttons_frame, text="Undo Sequence Changes", command=self.undo_sequence_changes)
-        undo_seq_btn.grid(row=0, column=2, padx=10, pady=5, sticky="w")
-
-        # Variant Mutations input
-        ctk.CTkLabel(self, text="Mutations per Variant:", 
-                    font=controller.MEDIUMFONT).grid(
+    def create_mutations_section(self):
+        ctk.CTkLabel(self, text="Mutations per Variant:", font=self.controller.MEDIUMFONT).grid(
             row=4, column=0, sticky="nw", padx=10, pady=(10, 0))
         
         # Frame for variant text and info button
@@ -1252,70 +1111,57 @@ class InputPage(ctk.CTkFrame):
         var_frame.grid(row=4, column=1, columnspan=2, pady=5, padx=5, sticky="ew")
         var_frame.grid_columnconfigure(0, weight=1)
         
-        self.var_text = ctk.CTkTextbox(var_frame, height=120, font=controller.SMALLFONT)
+        self.var_text = ctk.CTkTextbox(var_frame, height=150, font=self.controller.SMALLFONT)
         self.var_text.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         self.var_text.insert("1.0", "S19V, S30V, Q424V, A431E\nK3Q, K36R, D76Q, L167A, Q424V\n")
 
-        question_btn = ctk.CTkButton(var_frame, text="?", width=30, height=30, command=self.show_info_mutations)
+        question_btn = ctk.CTkButton(var_frame, text="?", width=30, height=30, 
+                                    command=self.show_info_mutations)
         question_btn.grid(row=0, column=1, sticky="ne", pady=5)
 
-        # Input parameters in a grid
+    def create_parameters_section(self):
         params_frame = ctk.CTkFrame(self)
         params_frame.grid(row=5, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
         params_frame.grid_columnconfigure(1, weight=1)
         params_frame.grid_columnconfigure(3, weight=1)
 
-        # Parameters
-        param_configs = [
-            ("Max mutations per step:", self.create_max_mut_combo, 0, 0),
-            ("Variant prefix:", self.create_prefix_entry, 0, 2),
-            ("Label Start Col:", self.create_start_col_entry, 1, 0),
-            ("Label Start Row:", self.create_start_row_entry, 1, 2)
-        ]
+        # Max mutations per step
+        ctk.CTkLabel(params_frame, text="Max mutations per step:", font=self.controller.MEDIUMFONT).grid(
+            row=0, column=0, sticky="w", padx=10, pady=5)
+        
+        self.max_mut_var = ctk.IntVar(value=1)
+        max_mut_combo = ctk.CTkComboBox(params_frame, values=["1", "2"], variable=self.max_mut_var, width=80)
+        max_mut_combo.grid(row=0, column=1, sticky="w", padx=5, pady=5)
 
-        for text, create_func, row, col in param_configs:
-            ctk.CTkLabel(params_frame, text=text, font=controller.MEDIUMFONT).grid(
-                row=row, column=col, sticky="w", padx=10, pady=5)
-            widget = create_func(params_frame)
-            widget.grid(row=row, column=col+1, sticky="w", padx=5, pady=5)
+        # Variant prefix
+        ctk.CTkLabel(params_frame, text="Variant prefix:", font=self.controller.MEDIUMFONT).grid(
+            row=0, column=2, sticky="w", padx=10, pady=5)
+        
+        self.var_prefix = ctk.StringVar(value="KWE_TA_A")
+        prefix_entry = ctk.CTkEntry(params_frame, textvariable=self.var_prefix, width=150)
+        prefix_entry.grid(row=0, column=3, sticky="w", padx=5, pady=5)
 
-        # Checkbox
+        # Skip databank checkbox
         self.skip_db = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(params_frame, text="Skip variant databank", variable=self.skip_db).grid(
-            row=1, column=3, columnspan=2, pady=10, padx=10, sticky="e")
+            row=0, column=4, pady=10, padx=10, sticky="e")
 
-        # Action buttons
+    def create_action_buttons(self):
         button_frame = ctk.CTkFrame(self)
         button_frame.grid(row=6, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
         
         run_btn = ctk.CTkButton(button_frame, text="Run Complete Workflow", 
-                               font=controller.MEDIUMFONT, command=self.run_workflow)
+                               font=self.controller.MEDIUMFONT, command=self.run_workflow)
         run_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
         
         undo_btn = ctk.CTkButton(button_frame, text="Undo Last Change", 
-                                font=controller.MEDIUMFONT, command=self.undo_change)
+                                font=self.controller.MEDIUMFONT, command=self.undo_change)
         undo_btn.grid(row=0, column=1, padx=10, pady=10, sticky="w")
 
-        # Status label (replaces the large output textbox)
+    def create_status_section(self):
         self.status_label = ctk.CTkLabel(self, text="Ready to run workflow", 
-                                        font=controller.SMALLFONT, text_color="gray")
-        self.status_label.grid(row=7, column=0, columnspan=3, sticky="w", padx=10, pady=5)
-
-    def create_max_mut_combo(self, parent):
-        self.max_mut_var = ctk.IntVar(value=1)
-        return ctk.CTkComboBox(parent, values=["1", "2"], variable=self.max_mut_var, width=80)
-
-    def create_prefix_entry(self, parent):
-        self.var_prefix = ctk.StringVar(value="KWE_TA_A")
-        return ctk.CTkEntry(parent, textvariable=self.var_prefix, width=150)
-
-    def create_start_col_entry(self, parent):
-        self.start_col = ctk.IntVar(value=0)
-        return ctk.CTkEntry(parent, textvariable=self.start_col, width=80)
-
-    def create_start_row_entry(self, parent):
-        self.start_row = ctk.IntVar(value=0)
-        return ctk.CTkEntry(parent, textvariable=self.start_row, width=80)
+                                        font=self.controller.SMALLFONT, text_color="gray")
+        self.status_label.grid(row=7, column=0, columnspan=3, sticky="w", padx=10)
 
     def get_dna_sequence(self):
         """Get the DNA sequence from the input field, cleaned and uppercase"""
@@ -1331,20 +1177,15 @@ class InputPage(ctk.CTkFrame):
 
     def load_sequences_database(self):
         file_path = self.get_sequences_file_path()
-        print(f"Loading sequences database from: {file_path}")
         if file_path.exists():
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     sequences = json.load(f)
-                print(f"Loaded sequences: {sequences}")
                 return sequences
             except Exception as e:
-                print(f"Error loading sequences database: {e}")
                 messagebox.showerror("Error", f"Failed to load sequences database: {str(e)}")
                 return {}
-        else:
-            print("Sequences file does not exist.")
-            return {}
+        return {}
 
     def save_sequences_database(self, sequences_db):
         """Save sequences to JSON file"""
@@ -1434,22 +1275,18 @@ class InputPage(ctk.CTkFrame):
         load_var = ctk.StringVar(value="")
 
         # Headers
-        ctk.CTkLabel(list_frame, text="Load", font=self.controller.MEDIUMFONT).grid(
-            row=0, column=0, padx=10, pady=5, sticky="w")
-        ctk.CTkLabel(list_frame, text="Delete", font=self.controller.MEDIUMFONT).grid(
-            row=0, column=1, padx=10, pady=5, sticky="w")
-        ctk.CTkLabel(list_frame, text="Name", font=self.controller.MEDIUMFONT).grid(
-            row=0, column=2, padx=10, pady=5, sticky="w")
-        ctk.CTkLabel(list_frame, text="Sequence (first 50 chars)", font=self.controller.MEDIUMFONT).grid(
-            row=0, column=3, padx=10, pady=5, sticky="w")
+        headers = [("Load", 0), ("Delete", 1), ("Name", 2), ("Sequence (first 50 chars)", 3)]
+        for text, col in headers:
+            ctk.CTkLabel(list_frame, text=text, font=self.controller.MEDIUMFONT).grid(
+                row=0, column=col, padx=10, pady=5, sticky="w")
 
         # Create list items
         for i, (name, sequence) in enumerate(sorted(sequences_db.items()), start=1):
-            # Radio button for loading (only one can be selected)
+            # Radio button for loading
             load_radio = ctk.CTkRadioButton(list_frame, text="", variable=load_var, value=name)
             load_radio.grid(row=i, column=0, padx=10, pady=2, sticky="w")
             
-            # Checkbox for deletion (multiple can be selected)
+            # Checkbox for deletion
             delete_var = ctk.BooleanVar(value=False)
             sequence_vars[name] = delete_var
             delete_check = ctk.CTkCheckBox(list_frame, text="", variable=delete_var)
@@ -1459,7 +1296,7 @@ class InputPage(ctk.CTkFrame):
             name_label = ctk.CTkLabel(list_frame, text=name, font=self.controller.SMALLFONT)
             name_label.grid(row=i, column=2, padx=10, pady=2, sticky="w")
             
-            # Sequence preview (first 50 characters)
+            # Sequence preview
             seq_preview = sequence[:50] + ("..." if len(sequence) > 50 else "")
             seq_label = ctk.CTkLabel(list_frame, text=seq_preview, 
                                    font=ctk.CTkFont(family="Courier", size=10))
@@ -1499,14 +1336,15 @@ class InputPage(ctk.CTkFrame):
             self.status_label.configure(text=f"Deleted {len(to_delete)} sequence(s)", text_color="orange")
             manage_window.destroy()
 
-        load_btn = ctk.CTkButton(button_frame, text="Load Selected", command=load_selected)
-        load_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-
-        delete_btn = ctk.CTkButton(button_frame, text="Delete Selected", command=delete_selected)
-        delete_btn.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-
-        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=manage_window.destroy)
-        cancel_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
+        buttons = [
+            ("Load Selected", load_selected, 0),
+            ("Delete Selected", delete_selected, 1),
+            ("Cancel", manage_window.destroy, 2)
+        ]
+        
+        for text, command, col in buttons:
+            btn = ctk.CTkButton(button_frame, text=text, command=command)
+            btn.grid(row=0, column=col, padx=10, pady=10, sticky="w")
 
     def undo_sequence_changes(self):
         """Undo last sequence database change"""
@@ -1530,11 +1368,11 @@ class InputPage(ctk.CTkFrame):
                             "Enter mutations separated by commas, one variant per line.\nExample: S19V, S30V\nMultiple variants separated by new lines.")
         
     def show_info_sequence(self):
-        messagebox.showinfo("Info",
-                            "Include 30 bases at the flanking sites!")
+        messagebox.showinfo("Info", "Include 30 bases at the flanking sites!")
 
     def select_output_dir(self):
-        new_dir = filedialog.askdirectory(title="Select Output Directory", initialdir=self.controller.output_dir.get())
+        new_dir = filedialog.askdirectory(title="Select Output Directory", 
+                                         initialdir=self.controller.output_dir.get())
         if new_dir:
             self.controller.output_dir.set(new_dir)
 
@@ -1546,13 +1384,11 @@ class InputPage(ctk.CTkFrame):
         variant_list = [list(map(str.strip, line.split(','))) for line in variants_raw if line]
         max_mutations = self.max_mut_var.get()
         vp = self.var_prefix.get().strip()
-        start_col = self.start_col.get()
-        start_row = self.start_row.get()
         skip_db = self.skip_db.get()
 
         output_dir = Path(self.controller.output_dir.get())
 
-        # ---- Primer design ----
+        # Primer design
         try:
             pg = PrimerGenerator(flank_size_bases=30)
             if not pg.check_sequence_validity(seq, flank_size=30):
@@ -1576,106 +1412,118 @@ class InputPage(ctk.CTkFrame):
                 if key not in existing_pairs:
                     all_primer_data.append(primer_set)
                     existing_pairs.add(key)
+        
         pg.save_primer_list(all_primer_data, output_dir=output_dir)
         pg.save_primer_data_json(all_primer_data, output_dir=output_dir)
 
-        # ---- Protocol generation ----
+        # Protocol generation
         try:
             protocol = MutagenesisProtocol(
-                variant_list,
-                max_mutations,
-                vp,
-                output_dir,
-                start_col,
-                start_row,
-                list_existing_as_steps=skip_db,
-                undo_stack=self.controller.undo_stack
+                variant_list, max_mutations, vp, output_dir, 2, 16,
+                list_existing_as_steps=skip_db, undo_stack=self.controller.undo_stack
             )
             protocol.run()
-            self.status_label.configure(text="Workflow completed successfully! Check output directory.", text_color="green")
+            self.status_label.configure(text="Workflow completed successfully! Check output directory.", 
+                                       text_color="green")
             self.controller.frames[DatabankPage].refresh_variants()
         except Exception as e:
             self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
 
     def undo_change(self):
         databank_path = Path(self.controller.output_dir.get()) / "protocols" / "variant_databank.json"
+        output_dir = Path(self.controller.output_dir.get())
+        protocols_dir = output_dir / "protocols"
+        
         try:
             if self.controller.undo_stack:
                 last_state = self.controller.undo_stack.pop()
+                
                 with open(databank_path, "w") as f:
                     json.dump(last_state, f, indent=2)
-                self.status_label.configure(text="Last change undone successfully", text_color="green")
+                
+                primer_files = [
+                    output_dir / "primer_list.txt",
+                    output_dir / "primer_list.csv", 
+                    output_dir / "primer_list.json"
+                ]
+                
+                for primer_file in primer_files:
+                    if primer_file.exists():
+                        primer_file.unlink()
+                        print(f"Removed primer file: {primer_file}")
+                
+                protocol_files = [
+                    protocols_dir / "mutagenesis_protocol.pdf",
+                    protocols_dir / "protocol_data.json",
+                    protocols_dir / "selected_variant_labels.pdf"
+                ]
+                
+                for protocol_file in protocol_files:
+                    if protocol_file.exists():
+                        protocol_file.unlink()
+                        print(f"Removed protocol file: {protocol_file}")
+                
+                self.status_label.configure(text="Last change undone successfully - all files cleaned up", text_color="green")
             else:
                 self.status_label.configure(text="No changes to undo", text_color="orange")
         except Exception as e:
             self.status_label.configure(text=f"Undo failed: {str(e)}", text_color="red")
 
-class WildtypeProteinPage(ctk.CTkFrame):
+
+class WildtypeProteinPage(ctk.CTkFrame, BaseProteinPage):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         
         # Configure grid for responsive layout
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)  # Protein display area
+        self.grid_rowconfigure(3, weight=1)
 
-        # Genetic code dictionary
-        self.genetic_code = {
-            'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
-            'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-            'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
-            'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
-            'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
-            'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
-            'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
-            'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
-            'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
-            'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
-            'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-            'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
-            'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
-            'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
-            'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
-            'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G'
-        }
+        self.create_header()
+        self.create_info_section()
+        self.create_format_controls()
+        self.create_display_area()
+        self.create_status_section()
 
-        # Header frame
+        # Store the current protein sequence
+        self.current_protein_1letter = ""
+
+    def create_header(self):
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
         header_frame.grid_columnconfigure(0, weight=1)
 
-        title = ctk.CTkLabel(header_frame,
-                             text="Wildtype Protein Sequence",
-                             corner_radius=10,
-                             fg_color="#4a90e2",
-                             text_color="white",
-                             font=controller.LARGEFONT,
-                             height=50)
+        title = ctk.CTkLabel(header_frame, text="Wildtype Protein Sequence",
+                             corner_radius=10, fg_color="#4a90e2", text_color="white",
+                             font=self.controller.LARGEFONT, height=50)
         title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
         back_btn = ctk.CTkButton(header_frame, text="Back to Input", 
-                                command=lambda: controller.show_frame(InputPage))
+                                command=lambda: self.controller.show_frame(InputPage))
         back_btn.grid(row=0, column=1, padx=10, pady=10, sticky="e")
 
-        # Info labels frame
+    def create_info_section(self):
         info_frame = ctk.CTkFrame(self)
         info_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
         info_frame.grid_columnconfigure((0,1,2), weight=1)
 
-        self.dna_length_label = ctk.CTkLabel(info_frame, text="DNA Length: N/A", font=controller.MEDIUMFONT)
+        self.dna_length_label = ctk.CTkLabel(info_frame, text="DNA Length: N/A", 
+                                           font=self.controller.MEDIUMFONT)
         self.dna_length_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
 
-        self.coding_length_label = ctk.CTkLabel(info_frame, text="Coding Length: N/A", font=controller.MEDIUMFONT)
+        self.coding_length_label = ctk.CTkLabel(info_frame, text="Coding Length: N/A", 
+                                              font=self.controller.MEDIUMFONT)
         self.coding_length_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
 
-        self.protein_length_label = ctk.CTkLabel(info_frame, text="Protein Length: N/A", font=controller.MEDIUMFONT)
+        self.protein_length_label = ctk.CTkLabel(info_frame, text="Protein Length: N/A", 
+                                               font=self.controller.MEDIUMFONT)
         self.protein_length_label.grid(row=0, column=2, padx=10, pady=10, sticky="w")
 
-        # Format selection frame
+    def create_format_controls(self):
         format_frame = ctk.CTkFrame(self)
         format_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
 
-        ctk.CTkLabel(format_frame, text="Display Format:", font=controller.MEDIUMFONT).grid(
+        ctk.CTkLabel(format_frame, text="Display Format:", font=self.controller.MEDIUMFONT).grid(
             row=0, column=0, padx=10, pady=10, sticky="w")
 
         self.format_var = ctk.StringVar(value="1-letter")
@@ -1686,83 +1534,23 @@ class WildtypeProteinPage(ctk.CTkFrame):
                                        width=120)
         format_menu.grid(row=0, column=1, padx=5, pady=10, sticky="w")
 
-        refresh_btn = ctk.CTkButton(format_frame, text="Refresh", command=self.update_protein_display, width=80)
+        refresh_btn = ctk.CTkButton(format_frame, text="Refresh", 
+                                   command=self.update_protein_display, width=80)
         refresh_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
 
-        copy_btn = ctk.CTkButton(format_frame, text="Copy to Clipboard", command=self.copy_to_clipboard, width=120)
+        copy_btn = ctk.CTkButton(format_frame, text="Copy to Clipboard", 
+                                command=self.copy_to_clipboard, width=120)
         copy_btn.grid(row=0, column=3, padx=10, pady=10, sticky="w")
 
-        # Protein sequence display (expandable)
+    def create_display_area(self):
         self.protein_text = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=11))
         self.protein_text.grid(row=3, column=0, pady=10, padx=10, sticky="nsew")
         self.protein_text.configure(state="disabled")
 
-        # Status label
-        self.status_label = ctk.CTkLabel(self, text="", text_color="gray", font=controller.SMALLFONT)
+    def create_status_section(self):
+        self.status_label = ctk.CTkLabel(self, text="", text_color="gray", 
+                                        font=self.controller.SMALLFONT)
         self.status_label.grid(row=4, column=0, sticky="w", padx=10, pady=5)
-
-        # Store the current protein sequence
-        self.current_protein_1letter = ""
-        self.current_protein_3letter = ""
-
-    def translate_dna_to_protein(self, dna_sequence):
-        """Translate DNA sequence to protein sequence"""
-        protein = []
-        for i in range(0, len(dna_sequence) - 2, 3):
-            codon = dna_sequence[i:i+3]
-            if codon in self.genetic_code:
-                protein.append(self.genetic_code[codon])
-            else:
-                protein.append('X')
-        return ''.join(protein)
-
-    def get_three_letter_code(self, one_letter):
-        """Convert one-letter amino acid code to three-letter code"""
-        aa_map = {
-            'A': 'Ala', 'C': 'Cys', 'D': 'Asp', 'E': 'Glu', 'F': 'Phe',
-            'G': 'Gly', 'H': 'His', 'I': 'Ile', 'K': 'Lys', 'L': 'Leu',
-            'M': 'Met', 'N': 'Asn', 'P': 'Pro', 'Q': 'Gln', 'R': 'Arg',
-            'S': 'Ser', 'T': 'Thr', 'V': 'Val', 'W': 'Trp', 'Y': 'Tyr',
-            '*': 'Ter', 'X': 'Xxx'
-        }
-        return aa_map.get(one_letter, 'Xxx')
-
-    def format_protein_sequence(self, sequence, format_type="1-letter", residues_per_line=60):
-        """Format protein sequence for display"""
-        if format_type == "1-letter":
-            lines = []
-            for i in range(0, len(sequence), residues_per_line):
-                line_seq = sequence[i:i+residues_per_line]
-                formatted_line = ""
-                for j in range(0, len(line_seq), 10):
-                    formatted_line += line_seq[j:j+10] + " "
-                lines.append(f"{i+1:>4}: {formatted_line.strip()}")
-            return '\n'.join(lines)
-
-        elif format_type == "3-letter":
-            three_letter = [self.get_three_letter_code(aa) for aa in sequence]
-            lines = []
-            residues_per_line_3letter = 20
-            for i in range(0, len(three_letter), residues_per_line_3letter):
-                line_seq = three_letter[i:i+residues_per_line_3letter]
-                lines.append(f"{i+1:>4}: {'-'.join(line_seq)}")
-            return '\n'.join(lines)
-
-        elif format_type == "Both":
-            result = "=== One-Letter Code ===\n"
-            result += self.format_protein_sequence(sequence, "1-letter") + "\n\n"
-            result += "=== Three-Letter Code ===\n"
-            result += self.format_protein_sequence(sequence, "3-letter")
-            return result
-
-        elif format_type == "FASTA":
-            header = ">Wildtype_Protein|Length=" + str(len(sequence))
-            lines = [header]
-            for i in range(0, len(sequence), 60):
-                lines.append(sequence[i:i+60])
-            return '\n'.join(lines)
-
-        return sequence
 
     def update_protein_display(self):
         """Update the protein display based on current DNA input"""
@@ -1793,7 +1581,7 @@ class WildtypeProteinPage(ctk.CTkFrame):
             return
 
         # Translate to protein
-        self.current_protein_1letter = self.translate_dna_to_protein(coding_seq)
+        self.current_protein_1letter = translate_dna_to_protein(coding_seq)
 
         # Update info labels
         self.dna_length_label.configure(text=f"DNA Length: {len(dna_seq)}bp")
@@ -1826,108 +1614,77 @@ class WildtypeProteinPage(ctk.CTkFrame):
         else:
             self.status_label.configure(text="No protein sequence to copy", text_color="orange")
 
-class VariantProteinPage(ctk.CTkFrame):
+
+class VariantProteinPage(ctk.CTkFrame, BaseProteinPage):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         
         # Configure grid for responsive layout
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)  # Protein display area
+        self.grid_rowconfigure(3, weight=1)
 
-        # Genetic code dictionary for translation
-        self.genetic_code = {
-            'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
-            'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-            'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
-            'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
-            'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
-            'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
-            'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
-            'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
-            'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
-            'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
-            'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-            'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
-            'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
-            'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
-            'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
-            'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G'
-        }
-
-        # Header frame with title and back button
-        header_frame = ctk.CTkFrame(self)
-        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
-        header_frame.grid_columnconfigure(0, weight=1)
-        title = ctk.CTkLabel(header_frame,
-                             text="Variant Protein Sequences",
-                             corner_radius=10,
-                             fg_color="#4a90e2",
-                             text_color="white",
-                             font=controller.LARGEFONT,
-                             height=50)
-        title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        back_btn = ctk.CTkButton(header_frame, text="Back to Databank", 
-                                 command=lambda: controller.show_frame(controller.frames[DatabankPage]))
-        back_btn.grid(row=0, column=1, padx=10, pady=10, sticky="e")
-
-        # Info labels frame
-        info_frame = ctk.CTkFrame(self)
-        info_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
-        info_frame.grid_columnconfigure((0,1,2), weight=1)
-        self.variant_count_label = ctk.CTkLabel(info_frame, text="Selected Variants: 0", font=controller.MEDIUMFONT)
-        self.variant_count_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        self.total_sequences_label = ctk.CTkLabel(info_frame, text="Total Sequences: 0", font=controller.MEDIUMFONT)
-        self.total_sequences_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-        self.avg_length_label = ctk.CTkLabel(info_frame, text="Avg Length: N/A", font=controller.MEDIUMFONT)
-        self.avg_length_label.grid(row=0, column=2, padx=10, pady=10, sticky="w")
-
-        # Control buttons frame
-        control_frame = ctk.CTkFrame(self)
-        control_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
-        refresh_btn = ctk.CTkButton(control_frame, text="Refresh from Databank", 
-                                   command=self.update_variant_display, width=150)
-        refresh_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        copy_btn = ctk.CTkButton(control_frame, text="Copy All to Clipboard", 
-                                 command=self.copy_to_clipboard, width=150)
-        copy_btn.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-
-        # Protein sequences display (expandable)
-        self.protein_text = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=11))
-        self.protein_text.grid(row=3, column=0, pady=10, padx=10, sticky="nsew")
-        self.protein_text.configure(state="disabled")
-
-        # Status label
-        self.status_label = ctk.CTkLabel(self, text="", text_color="gray", font=controller.SMALLFONT)
-        self.status_label.grid(row=4, column=0, sticky="w", padx=10, pady=5)
+        self.create_header()
+        self.create_info_section()
+        self.create_controls()
+        self.create_display_area()
+        self.create_status_section()
 
         # Internal state
         self.current_variants = {}
 
-    def translate_dna_to_protein(self, dna_sequence):
-        protein = []
-        for i in range(0, len(dna_sequence) - 2, 3):
-            codon = dna_sequence[i:i+3]
-            protein.append(self.genetic_code.get(codon, 'X'))
-        return "".join(protein)
+    def create_header(self):
+        header_frame = ctk.CTkFrame(self)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
+        header_frame.grid_columnconfigure(0, weight=1)
+        
+        title = ctk.CTkLabel(header_frame, text="Variant Protein Sequences",
+                             corner_radius=10, fg_color="#4a90e2", text_color="white",
+                             font=self.controller.LARGEFONT, height=50)
+        title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        
+        back_btn = ctk.CTkButton(header_frame, text="Back to Databank", 
+                                 command=lambda: self.controller.show_frame(DatabankPage))
+        back_btn.grid(row=0, column=1, padx=10, pady=10, sticky="e")
 
-    def apply_mutations_to_protein(self, wt_protein, mutation_str):
-        protein_list = list(wt_protein)
-        mutations = mutation_str.split(',') if mutation_str else []
-        for mut in mutations:
-            mut = mut.strip()
-            if not mut:
-                continue
-            m = re.match(r'([A-Z])(\d+)([A-Z])', mut)
-            if m:
-                orig_aa, pos, new_aa = m.group(1), int(m.group(2)), m.group(3)
-                idx = pos - 1
-                if 0 <= idx < len(protein_list):
-                    # Optional warning check
-                    if protein_list[idx] != orig_aa:
-                        print(f"Warning: WT AA at position {pos} is {protein_list[idx]}, expected {orig_aa}")
-                    protein_list[idx] = new_aa
-        return "".join(protein_list)
+    def create_info_section(self):
+        info_frame = ctk.CTkFrame(self)
+        info_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+        info_frame.grid_columnconfigure((0,1,2), weight=1)
+        
+        self.variant_count_label = ctk.CTkLabel(info_frame, text="Selected Variants: 0", 
+                                              font=self.controller.MEDIUMFONT)
+        self.variant_count_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        
+        self.total_sequences_label = ctk.CTkLabel(info_frame, text="Total Sequences: 0", 
+                                                font=self.controller.MEDIUMFONT)
+        self.total_sequences_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+        
+        self.avg_length_label = ctk.CTkLabel(info_frame, text="Avg Length: N/A", 
+                                           font=self.controller.MEDIUMFONT)
+        self.avg_length_label.grid(row=0, column=2, padx=10, pady=10, sticky="w")
+
+    def create_controls(self):
+        control_frame = ctk.CTkFrame(self)
+        control_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        
+        refresh_btn = ctk.CTkButton(control_frame, text="Refresh from Databank", 
+                                   command=self.update_variant_display, width=150)
+        refresh_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        
+        copy_btn = ctk.CTkButton(control_frame, text="Copy All to Clipboard", 
+                                 command=self.copy_to_clipboard, width=150)
+        copy_btn.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+
+    def create_display_area(self):
+        self.protein_text = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=11))
+        self.protein_text.grid(row=3, column=0, pady=10, padx=10, sticky="nsew")
+        self.protein_text.configure(state="disabled")
+
+    def create_status_section(self):
+        self.status_label = ctk.CTkLabel(self, text="", text_color="gray", 
+                                        font=self.controller.SMALLFONT)
+        self.status_label.grid(row=4, column=0, sticky="w", padx=10, pady=5)
 
     def get_selected_variants(self):
         databank_page = self.controller.frames.get(DatabankPage)
@@ -1938,7 +1695,7 @@ class VariantProteinPage(ctk.CTkFrame):
             if check_var.get() == 1:
                 selected[var_id] = True
         return selected
-
+    
     def generate_variant_protein_sequences(self):
         input_page = self.controller.frames[InputPage]
         wt_dna = input_page.get_dna_sequence()
@@ -1947,10 +1704,9 @@ class VariantProteinPage(ctk.CTkFrame):
             return {}
 
         coding_dna = wt_dna[30:-30] if len(wt_dna) > 60 else wt_dna
-        wt_protein = self.translate_dna_to_protein(coding_dna)
+        wt_protein = translate_dna_to_protein(coding_dna)
 
         databank = self.controller.get_databank()
-
         selected_variants = self.get_selected_variants()
         if not selected_variants:
             self.status_label.configure(text="No variants selected", text_color="orange")
@@ -2022,6 +1778,7 @@ class VariantProteinPage(ctk.CTkFrame):
         self.clipboard_append(content)
         self.status_label.configure(text="✓ Copied all sequences to clipboard", text_color="green")
 
+
 class DatabankPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
         super().__init__(parent)
@@ -2029,9 +1786,9 @@ class DatabankPage(ctk.CTkFrame):
         self.last_deleted = {}
 
         # Configure main grid for responsive layout
-        self.grid_columnconfigure(0, weight=1, minsize=400)  # Variant list
-        self.grid_columnconfigure(1, weight=1, minsize=400)  # Search controls
-        self.grid_rowconfigure(1, weight=1)  # Main content row
+        self.grid_columnconfigure(0, weight=1, minsize=400)
+        self.grid_columnconfigure(1, weight=1, minsize=400)
+        self.grid_rowconfigure(1, weight=1)
 
         # Internal state for variants and filtering
         self.check_vars = []
@@ -2039,46 +1796,61 @@ class DatabankPage(ctk.CTkFrame):
         self.all_variants = {}
         self.filtered_variants = {}
 
-        # Header frame
+        self.create_header()
+        self.create_main_content()
+        self.create_action_buttons()
+        self.create_status_section()
+
+        # Initialize with first search field
+        self.add_search_field(is_first=True)
+        self.refresh_variants()
+
+    def create_header(self):
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=20)
         header_frame.grid_columnconfigure(0, weight=1)
 
         title = ctk.CTkLabel(header_frame, text="Variant Databank",
                              corner_radius=15, fg_color="#4a90e2", text_color="white",
-                             font=controller.LARGEFONT, height=50)
+                             font=self.controller.LARGEFONT, height=50)
         title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
         back_btn = ctk.CTkButton(header_frame, text="Back to Input", 
-                                command=lambda: controller.show_frame(InputPage))
+                                command=lambda: self.controller.show_frame(InputPage))
         back_btn.grid(row=0, column=1, sticky="e", padx=10, pady=10)
 
-        # Main content frame
+    def create_main_content(self):
         content_frame = ctk.CTkFrame(self)
         content_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=5)
-        content_frame.grid_columnconfigure(0, weight=1)  # Variant list
-        content_frame.grid_columnconfigure(1, weight=1)  # Search section
+        content_frame.grid_columnconfigure(0, weight=1)
+        content_frame.grid_columnconfigure(1, weight=1)
         content_frame.grid_rowconfigure(0, weight=1)
 
         # Variant list frame (left side)
-        variant_frame = ctk.CTkFrame(content_frame)
+        self.create_variant_list(content_frame)
+        
+        # Search section (right side)
+        self.create_search_section(content_frame)
+
+    def create_variant_list(self, parent):
+        variant_frame = ctk.CTkFrame(parent)
         variant_frame.grid(row=0, column=0, sticky="nsew", padx=(5, 2), pady=5)
         variant_frame.grid_columnconfigure(0, weight=1)
         variant_frame.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(variant_frame, text="Variants:", font=controller.MEDIUMFONT).grid(
+        ctk.CTkLabel(variant_frame, text="Variants:", font=self.controller.MEDIUMFONT).grid(
             row=0, column=0, sticky="w", padx=10, pady=(10, 5))
 
         self.variant_listbox = ctk.CTkScrollableFrame(variant_frame)
         self.variant_listbox.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
-        # Search section (right side)
-        search_main_frame = ctk.CTkFrame(content_frame)
+    def create_search_section(self, parent):
+        search_main_frame = ctk.CTkFrame(parent)
         search_main_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 5), pady=5)
         search_main_frame.grid_columnconfigure(0, weight=1)
         search_main_frame.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(search_main_frame, text="Search & Filter:", font=controller.MEDIUMFONT).grid(
+        ctk.CTkLabel(search_main_frame, text="Search & Filter:", font=self.controller.MEDIUMFONT).grid(
             row=0, column=0, sticky="w", padx=10, pady=(10, 5))
 
         self.search_frame = ctk.CTkScrollableFrame(search_main_frame)
@@ -2088,39 +1860,43 @@ class DatabankPage(ctk.CTkFrame):
         self.search_fields = []
         self.search_vars = []
 
-        # Search options frame - REORGANIZED LAYOUT
+        # Create search options
+        self.create_search_options()
+
+        # Results label
+        self.results_label = ctk.CTkLabel(self, text="", text_color="gray")
+        self.results_label.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 0))
+
+    def create_search_options(self):
         options_frame = ctk.CTkFrame(self.search_frame)
         options_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-        options_frame.grid_columnconfigure(5, weight=1)  # Make column 5 expandable
+        options_frame.grid_columnconfigure(5, weight=1)
 
-        # Row 0: Mutation count filter (now first)
-        ctk.CTkLabel(options_frame, text="Mutations:", font=controller.SMALLFONT).grid(
+        # Mutation count filter
+        ctk.CTkLabel(options_frame, text="Mutations:", font=self.controller.SMALLFONT).grid(
             row=0, column=0, padx=5, pady=5, sticky="w")
 
-        # Min mutations entry
         self.min_mutations_var = ctk.StringVar(value="")
         min_entry = ctk.CTkEntry(options_frame, textvariable=self.min_mutations_var, 
                                placeholder_text="Min", width=50)
         min_entry.grid(row=0, column=1, padx=2, pady=5, sticky="w")
         self.min_mutations_var.trace("w", self.on_search_change)
 
-        ctk.CTkLabel(options_frame, text="to", font=controller.SMALLFONT).grid(
+        ctk.CTkLabel(options_frame, text="to", font=self.controller.SMALLFONT).grid(
             row=0, column=2, padx=2, pady=5, sticky="w")
 
-        # Max mutations entry
         self.max_mutations_var = ctk.StringVar(value="")
         max_entry = ctk.CTkEntry(options_frame, textvariable=self.max_mutations_var, 
                                placeholder_text="Max", width=50)
         max_entry.grid(row=0, column=3, padx=2, pady=5, sticky="w")
         self.max_mutations_var.trace("w", self.on_search_change)
 
-        # Clear mutation filter button
         clear_mut_btn = ctk.CTkButton(options_frame, text="Clear", 
                                      command=self.clear_mutation_filter, width=60)
         clear_mut_btn.grid(row=0, column=4, padx=10, pady=5, sticky="w")
 
-        # Row 1: Logic controls grouped together (now second)
-        ctk.CTkLabel(options_frame, text="Logic:", font=controller.SMALLFONT).grid(
+        # Logic controls
+        ctk.CTkLabel(options_frame, text="Logic:", font=self.controller.SMALLFONT).grid(
             row=1, column=0, padx=5, pady=5, sticky="w")
 
         self.search_logic_var = ctk.StringVar(value="AND")
@@ -2129,7 +1905,6 @@ class DatabankPage(ctk.CTkFrame):
                                       command=self.on_search_change, width=70)
         logic_menu.grid(row=1, column=1, padx=5, pady=5, sticky="w")
 
-        # Add/Remove buttons next to Logic
         self.add_btn = ctk.CTkButton(options_frame, text="+", 
                                     command=self.add_search_field, width=30, height=30)
         self.add_btn.grid(row=1, column=2, padx=2, pady=5, sticky="w")
@@ -2139,21 +1914,17 @@ class DatabankPage(ctk.CTkFrame):
                                        width=30, height=30, state="disabled")
         self.remove_btn.grid(row=1, column=3, padx=2, pady=5, sticky="w")
 
-        # Clear All button next to +/- buttons
         clear_all_btn = ctk.CTkButton(options_frame, text="Clear All", 
                                      command=self.clear_all_search, width=80)
         clear_all_btn.grid(row=1, column=4, padx=10, pady=5, sticky="w")
 
-        # Row 2: Help text
-        help_label = ctk.CTkLabel(options_frame, text="Use AND to match all terms, OR for any. Filter by mutation count range (e.g., 2 to 4).",
-                                 font=controller.SMALLFONT, text_color="gray")
+        # Help text
+        help_label = ctk.CTkLabel(options_frame, 
+                                 text="Use AND to match all terms, OR for any. Filter by mutation count range (e.g., 2 to 4).",
+                                 font=self.controller.SMALLFONT, text_color="gray")
         help_label.grid(row=2, column=0, columnspan=6, padx=5, pady=(0, 5), sticky="w")
 
-        # Results label
-        self.results_label = ctk.CTkLabel(self, text="", text_color="gray")
-        self.results_label.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 0))
-
-        # Action buttons frame
+    def create_action_buttons(self):
         button_frame = ctk.CTkFrame(self)
         button_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
         
@@ -2161,27 +1932,19 @@ class DatabankPage(ctk.CTkFrame):
             ("Select All", self.select_all, 0),
             ("Deselect All", self.deselect_all, 1),
             ("Delete Selected Variants", self.delete_variants, 2),
-            ("Undo Delete", self.undo_delete, 3)
+            ("Undo Delete", self.undo_delete, 3),
+            ("Print Labels", self.print_selected_labels, 4),
+            ("Refresh", self.refresh_variants, 5),
+            ("View Proteins", lambda: self.controller.show_frame(VariantProteinPage), 6)
         ]
         
         for text, command, col in buttons:
             btn = ctk.CTkButton(button_frame, text=text, command=command)
             btn.grid(row=0, column=col, sticky="w", padx=10, pady=10)
 
-        refresh_btn = ctk.CTkButton(button_frame, text="Refresh", command=self.refresh_variants)
-        refresh_btn.grid(row=0, column=4, sticky="w", padx=10, pady=10)
-
-        view_proteins_btn = ctk.CTkButton(button_frame, text="View Proteins", 
-                                         command=lambda: controller.show_frame(VariantProteinPage))
-        view_proteins_btn.grid(row=0, column=5, sticky="w", padx=10, pady=10)
-
-        # Status label
+    def create_status_section(self):
         self.status_box = ctk.CTkLabel(self, text="", text_color="green")
         self.status_box.grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 10))
-
-        # Initialize with first search field
-        self.add_search_field(is_first=True)
-        self.refresh_variants()
 
     def add_search_field(self, is_first=False):
         field_num = len(self.search_fields)
@@ -2193,7 +1956,7 @@ class DatabankPage(ctk.CTkFrame):
         field_frame.grid(row=field_num + 2, column=0, sticky="ew", padx=5, pady=2)
         field_frame.grid_columnconfigure(1, weight=1)
         
-        label_text = "Search:" if is_first else f"Search:"
+        label_text = "Search:" if is_first else "Search:"
         label = ctk.CTkLabel(field_frame, text=label_text, font=self.controller.SMALLFONT)
         label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
         
@@ -2385,6 +2148,259 @@ class DatabankPage(ctk.CTkFrame):
         self.refresh_variants()
         self.status_box.configure(text=f"Restored {restored_count} variant(s).", text_color="green")
 
+    def print_selected_labels(self):
+        """Print labels for selected variants"""
+        selected_variants = []
+        for var_id, check_var in self.check_vars:
+            if check_var.get() == 1:
+                selected_variants.append(var_id)
+        
+        if not selected_variants:
+            self.status_box.configure(text="Please select variants to print labels for.", text_color="red")
+            return
+        
+        # Open label selection window
+        output_dir = self.controller.output_dir.get()
+        label_window = LabelSelectionWindow(self, selected_variants, output_dir, self.controller)
+
+
+class LabelPrintingSystem:
+    def __init__(self):
+        # Herma 10900 label specifications
+        self.columns = 7
+        self.rows = 27
+        self.label_width = 25.3 * mm
+        self.label_height = 9.9 * mm
+        self.horizontal_spacing = 2.5 * mm
+        self.top_margin = 13.5 * mm
+        self.left_margin = 10.3 * mm
+        self.font_size = 5.5
+
+    def generate_labels_pdf(self, selected_variants, start_row, start_col, output_path):
+        """Generate PDF with selected variants starting from specified position"""
+        page_width, page_height = A4
+        c = canvas.Canvas(str(output_path), pagesize=A4)
+        c.setFont("Helvetica", self.font_size)
+
+        # Sort variants for consistent ordering
+        sorted_variants = sorted(selected_variants)
+        
+        variant_index = 0
+        total_variants = len(sorted_variants)
+        current_row = start_row
+        current_col = start_col
+        page_number = 1
+
+        while variant_index < total_variants:
+            # Calculate position
+            x = self.left_margin + current_col * (self.label_width + self.horizontal_spacing)
+            y = page_height - self.top_margin - (current_row + 1) * self.label_height
+
+            # Draw label
+            label_text = sorted_variants[variant_index]
+            text_x = x + self.label_width / 2
+            text_y = y + self.label_height / 2 - self.font_size / 2
+            c.drawCentredString(text_x, text_y, label_text)
+            
+            variant_index += 1
+
+            # Move to next position (left to right, top to bottom)
+            current_col += 1
+            if current_col >= self.columns:
+                current_col = 0
+                current_row += 1
+                if current_row >= self.rows:
+                    # Start new page
+                    if variant_index < total_variants:
+                        c.showPage()
+                        c.setFont("Helvetica", self.font_size)
+                        current_row = 0
+                        current_col = 0
+                        page_number += 1
+
+        c.save()
+        return True
+
+
+class LabelSelectionWindow:
+    def __init__(self, parent, selected_variants, output_dir, controller):
+        self.parent = parent
+        self.selected_variants = selected_variants
+        self.output_dir = output_dir
+        self.controller = controller
+        self.label_system = LabelPrintingSystem()
+        
+        # Create window
+        self.window = ctk.CTkToplevel(parent)
+        self.window.title("Label Sheet Position Selection")
+        self.window.geometry("800x600")
+        self.window.transient(parent)
+        self.window.after(100, self.window.grab_set)
+
+        # Configure grid
+        self.window.grid_columnconfigure(0, weight=1)
+        self.window.grid_rowconfigure(2, weight=1)
+
+        # Selected cell tracking
+        self.selected_cell = None
+        self.cell_buttons = {}
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Title
+        title_label = ctk.CTkLabel(self.window, 
+                                  text=f"Select Starting Position for {len(self.selected_variants)} Labels",
+                                  font=self.controller.LARGEFONT)
+        title_label.grid(row=0, column=0, pady=20, sticky="ew")
+
+        # Info label
+        info_label = ctk.CTkLabel(self.window, 
+                                 text="Click on a cell to select the starting position. Labels will fill left-to-right, top-to-bottom.",
+                                 font=self.controller.MEDIUMFONT)
+        info_label.grid(row=1, column=0, pady=10, sticky="ew")
+
+        # Grid frame
+        grid_frame = ctk.CTkScrollableFrame(self.window)
+        grid_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=10)
+
+        # Create grid of buttons (7 columns x 27 rows)
+        for row in range(self.label_system.rows):
+            for col in range(self.label_system.columns):
+                btn = ctk.CTkButton(grid_frame, 
+                                   text=f"R{row+1}\nC{col+1}",
+                                   width=60, height=40,
+                                   font=ctk.CTkFont(size=8),
+                                   command=lambda r=row, c=col: self.select_cell(r, c))
+                btn.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
+                self.cell_buttons[(row, col)] = btn
+
+        # Buttons frame
+        button_frame = ctk.CTkFrame(self.window)
+        button_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=10)
+
+        # Status label
+        self.status_label = ctk.CTkLabel(button_frame, text="Select a starting position", 
+                                        font=self.controller.MEDIUMFONT)
+        self.status_label.grid(row=0, column=0, columnspan=3, pady=10)
+
+        # Action buttons
+        self.generate_btn = ctk.CTkButton(button_frame, text="Generate Labels PDF", 
+                                         command=self.generate_pdf, state="disabled")
+        self.generate_btn.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+
+        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=self.window.destroy)
+        cancel_btn.grid(row=1, column=1, padx=10, pady=10, sticky="w")
+
+        # Preview button
+        preview_btn = ctk.CTkButton(button_frame, text="Preview Selection", 
+                                   command=self.preview_selection, state="disabled")
+        preview_btn.grid(row=1, column=2, padx=10, pady=10, sticky="w")
+
+        # Store reference to preview button
+        self.preview_btn = preview_btn
+
+    def select_cell(self, row, col):
+        """Handle cell selection"""
+        # Reset previous selection
+        if self.selected_cell:
+            prev_row, prev_col = self.selected_cell
+            self.cell_buttons[(prev_row, prev_col)].configure(fg_color=("gray75", "gray25"))
+
+        # Highlight new selection
+        self.selected_cell = (row, col)
+        self.cell_buttons[(row, col)].configure(fg_color="green")
+        
+        # Update status and enable buttons
+        self.status_label.configure(text=f"Selected: Row {row+1}, Column {col+1}")
+        self.generate_btn.configure(state="normal")
+        self.preview_btn.configure(state="normal")
+
+    def preview_selection(self):
+        """Preview which cells will be filled"""
+        if not self.selected_cell:
+            return
+
+        # Reset all buttons to default color first
+        for (row, col), btn in self.cell_buttons.items():
+            if (row, col) != self.selected_cell:
+                btn.configure(fg_color=("gray75", "gray25"))
+
+        # Highlight cells that will be filled
+        start_row, start_col = self.selected_cell
+        current_row, current_col = start_row, start_col
+        labels_placed = 0
+        total_labels = len(self.selected_variants)
+
+        while labels_placed < total_labels and current_row < self.label_system.rows:
+            # Highlight current cell
+            if (current_row, current_col) in self.cell_buttons:
+                if (current_row, current_col) == self.selected_cell:
+                    self.cell_buttons[(current_row, current_col)].configure(fg_color="green")
+                else:
+                    self.cell_buttons[(current_row, current_col)].configure(fg_color="blue")
+            
+            labels_placed += 1
+            
+            # Move to next position
+            current_col += 1
+            if current_col >= self.label_system.columns:
+                current_col = 0
+                current_row += 1
+
+        # Update status
+        if labels_placed < total_labels:
+            self.status_label.configure(
+                text=f"Preview: {labels_placed} labels fit on this page, {total_labels - labels_placed} continue on next page"
+            )
+        else:
+            self.status_label.configure(text=f"Preview: All {total_labels} labels fit on this page")
+
+    def generate_pdf(self):
+        """Generate the labels PDF"""
+        if not self.selected_cell:
+            messagebox.showwarning("Warning", "Please select a starting position")
+            return
+
+        try:
+            start_row, start_col = self.selected_cell
+            output_path = Path(self.output_dir) / "protocols" / "selected_variant_labels.pdf"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            success = self.label_system.generate_labels_pdf(
+                self.selected_variants, start_row, start_col, output_path
+            )
+
+            if success:
+                messagebox.showinfo("Success", f"Labels PDF generated successfully!\nSaved to: {output_path}")
+                self.window.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to generate labels PDF")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error generating PDF: {str(e)}")
+
+# Updated DatabankPage with Print Labels button
+def add_print_labels_button_to_databank():
+    """Function to add the print labels functionality to the existing DatabankPage"""
+    
+    # This would be added to the existing DatabankPage class
+    def print_selected_labels(self):
+        """Print labels for selected variants"""
+        # Get selected variants
+        selected_variants = []
+        for var_id, check_var in self.check_vars:
+            if check_var.get() == 1:
+                selected_variants.append(var_id)
+        
+        if not selected_variants:
+            messagebox.showwarning("Warning", "Please select variants to print labels for")
+            return
+        
+        # Open label selection window
+        output_dir = self.controller.output_dir.get()
+        label_window = LabelSelectionWindow(self, selected_variants, output_dir, self.controller)
+
 class ProtocolResultsPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
         super().__init__(parent)
@@ -2392,35 +2408,39 @@ class ProtocolResultsPage(ctk.CTkFrame):
         
         # Configure grid for responsive layout
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)  # Results display area
+        self.grid_rowconfigure(2, weight=1)
 
-        # Header frame
+        self.create_header()
+        self.create_controls()
+        self.create_display_area()
+
+        # Load results on initialization
+        self.refresh_results()
+
+    def create_header(self):
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
         header_frame.grid_columnconfigure(0, weight=1)
 
         title = ctk.CTkLabel(header_frame, text="Protocol Results",
                              corner_radius=10, fg_color="#4a90e2", text_color="white",
-                             font=controller.LARGEFONT, height=50)
+                             font=self.controller.LARGEFONT, height=50)
         title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
         back_btn = ctk.CTkButton(header_frame, text="Back to Input", 
-                                command=lambda: controller.show_frame(InputPage))
+                                command=lambda: self.controller.show_frame(InputPage))
         back_btn.grid(row=0, column=1, sticky="e", padx=10, pady=10)
 
-        # Control buttons frame
+    def create_controls(self):
         controls_frame = ctk.CTkFrame(self)
         controls_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
         
         refresh_btn = ctk.CTkButton(controls_frame, text="Refresh Results", command=self.refresh_results)
         refresh_btn.grid(row=0, column=0, sticky="w", padx=10, pady=10)
 
-        # Results display area (expandable)
-        self.results_text = ctk.CTkTextbox(self, font=controller.SMALLFONT)
+    def create_display_area(self):
+        self.results_text = ctk.CTkTextbox(self, font=self.controller.SMALLFONT)
         self.results_text.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
-
-        # Load results on initialization
-        self.refresh_results()
 
     def refresh_results(self):
         self.results_text.configure(state="normal")
@@ -2485,8 +2505,8 @@ class ProtocolResultsPage(ctk.CTkFrame):
             self.results_text.insert("end", f"{variant:<15} | {muts}\n")
 
         self.results_text.insert("end", f"\nTotal variants: {len(all_variants)}\n")
-
         self.results_text.configure(state="disabled")
+
 
 class PrimerPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -2495,24 +2515,31 @@ class PrimerPage(ctk.CTkFrame):
         
         # Configure grid for responsive layout
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)  # Table area
+        self.grid_rowconfigure(2, weight=1)
 
-        # Header frame
+        self.create_header()
+        self.create_controls()
+        self.create_table_area()
+
+        # Keep references to rows
+        self.table_labels = []
+
+    def create_header(self):
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
         header_frame.grid_columnconfigure(0, weight=1)
 
         title = ctk.CTkLabel(header_frame, text="Primer List", 
                             corner_radius=10, fg_color="#4a90e2", 
-                            text_color="white", font=controller.LARGEFONT,
+                            text_color="white", font=self.controller.LARGEFONT,
                             height=50)
         title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
         back_btn = ctk.CTkButton(header_frame, text="Back to Input", 
-                                command=lambda: controller.show_frame(InputPage))
+                                command=lambda: self.controller.show_frame(InputPage))
         back_btn.grid(row=0, column=1, sticky="e", padx=10, pady=10)
 
-        # Controls frame
+    def create_controls(self):
         controls_frame = ctk.CTkFrame(self)
         controls_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
 
@@ -2522,12 +2549,9 @@ class PrimerPage(ctk.CTkFrame):
         refresh_btn = ctk.CTkButton(controls_frame, text="Refresh", command=self.load_primers)
         refresh_btn.grid(row=0, column=1, sticky="w", padx=10, pady=10)
 
-        # Scrollable frame for table (expandable)
+    def create_table_area(self):
         self.scroll_frame = ctk.CTkScrollableFrame(self)
         self.scroll_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
-
-        # Keep references to rows
-        self.table_labels = []
 
     def load_primers(self):
         """Load primer_list.csv and display in table"""
@@ -2556,8 +2580,8 @@ class PrimerPage(ctk.CTkFrame):
 
             # Configure grid columns for proper spacing
             headers = ["Primer Name", "Primer Sequence", "Tm (°C)", "Overlap Tm (°C)"]
-            col_weights = [23, 40, 12, 12]  # Roughly proportional to your original widths
-            min_widths = [150, 250, 80, 80]   # Minimum widths to prevent too small columns
+            col_weights = [23, 40, 12, 12]
+            min_widths = [150, 250, 80, 80]
 
             for i, (weight, min_width) in enumerate(zip(col_weights, min_widths)):
                 self.scroll_frame.grid_columnconfigure(i, weight=weight, minsize=min_width)
@@ -2603,6 +2627,7 @@ class PrimerPage(ctk.CTkFrame):
         self.clipboard_clear()
         self.clipboard_append(text)
 
+
 class MutationExtractorPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
         super().__init__(parent)
@@ -2610,68 +2635,54 @@ class MutationExtractorPage(ctk.CTkFrame):
         
         # Configure grid for responsive layout
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)  # FASTA content area
+        self.grid_rowconfigure(3, weight=1)
 
-        # Genetic code for DNA to protein translation
-        self.genetic_code = {
-            'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
-            'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-            'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
-            'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
-            'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
-            'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
-            'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
-            'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
-            'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
-            'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
-            'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-            'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
-            'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
-            'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
-            'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
-            'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G'
-        }
+        self.create_header()
+        self.create_reference_selection()
+        self.create_fasta_selection()
+        self.create_preview_area()
+        self.create_action_buttons()
+        self.create_status_section()
 
-        # Header frame
+        # Initialize
+        self.refresh_reference_sequences()
+
+    def create_header(self):
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
         header_frame.grid_columnconfigure(0, weight=1)
 
-        title = ctk.CTkLabel(header_frame,
-                             text="Mutation Extractor",
-                             corner_radius=10,
-                             fg_color="#4a90e2",
-                             text_color="white",
-                             font=controller.LARGEFONT,
-                             height=50)
+        title = ctk.CTkLabel(header_frame, text="Mutation Extractor",
+                             corner_radius=10, fg_color="#4a90e2", text_color="white",
+                             font=self.controller.LARGEFONT, height=50)
         title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
         back_btn = ctk.CTkButton(header_frame, text="Back to Input", 
-                                command=lambda: controller.show_frame(InputPage))
+                                command=lambda: self.controller.show_frame(InputPage))
         back_btn.grid(row=0, column=1, padx=10, pady=10, sticky="e")
 
-        # Reference sequence selection frame
+    def create_reference_selection(self):
         ref_frame = ctk.CTkFrame(self)
         ref_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
         ref_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(ref_frame, text="Reference Sequence:", font=controller.MEDIUMFONT).grid(
+        ctk.CTkLabel(ref_frame, text="Reference Sequence:", font=self.controller.MEDIUMFONT).grid(
             row=0, column=0, sticky="w", padx=10, pady=10)
 
-        self.ref_sequence_var = ctk.StringVar(value="")
+        self.reference_var = ctk.StringVar(value="")
         self.ref_dropdown = ctk.CTkOptionMenu(ref_frame, values=["No sequences available"], 
-                                             variable=self.ref_sequence_var, width=200)
+                                             variable=self.reference_var, width=200)
         self.ref_dropdown.grid(row=0, column=1, sticky="w", padx=5, pady=10)
 
         refresh_btn = ctk.CTkButton(ref_frame, text="Refresh", command=self.refresh_reference_sequences, width=80)
         refresh_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
 
-        # FASTA file selection frame
+    def create_fasta_selection(self):
         fasta_frame = ctk.CTkFrame(self)
         fasta_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
         fasta_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(fasta_frame, text="FASTA File:", font=controller.MEDIUMFONT).grid(
+        ctk.CTkLabel(fasta_frame, text="FASTA File:", font=self.controller.MEDIUMFONT).grid(
             row=0, column=0, sticky="w", padx=10, pady=10)
 
         self.fasta_path_var = ctk.StringVar(value="")
@@ -2681,40 +2692,26 @@ class MutationExtractorPage(ctk.CTkFrame):
         browse_btn = ctk.CTkButton(fasta_frame, text="Browse...", command=self.browse_fasta_file, width=80)
         browse_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
 
-        # FASTA preview area (expandable)
-        preview_label = ctk.CTkLabel(self, text="FASTA File Preview:", font=controller.MEDIUMFONT)
+    def create_preview_area(self):
+        preview_label = ctk.CTkLabel(self, text="FASTA File Preview:", font=self.controller.MEDIUMFONT)
         preview_label.grid(row=3, column=0, sticky="nw", padx=10, pady=(10, 5))
 
         self.fasta_preview = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=11))
         self.fasta_preview.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.fasta_preview.configure(state="disabled")
 
-        # Action buttons frame
+    def create_action_buttons(self):
         action_frame = ctk.CTkFrame(self)
         action_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=10)
 
         extract_btn = ctk.CTkButton(action_frame, text="Extract Mutations", 
-                                   command=self.extract_mutations, font=controller.MEDIUMFONT)
+                                   command=self.extract_mutations, font=self.controller.MEDIUMFONT)
         extract_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
 
-        # Status label
+    def create_status_section(self):
         self.status_label = ctk.CTkLabel(self, text="Select reference sequence and FASTA file to begin", 
-                                        font=controller.SMALLFONT, text_color="gray")
+                                        font=self.controller.SMALLFONT, text_color="gray")
         self.status_label.grid(row=5, column=0, sticky="w", padx=10, pady=5)
-
-        # Initialize
-        self.refresh_reference_sequences()
-
-    def translate_dna_to_protein(self, dna_sequence):
-        """Translate DNA sequence to protein sequence"""
-        protein = []
-        for i in range(0, len(dna_sequence) - 2, 3):
-            codon = dna_sequence[i:i+3]
-            if codon in self.genetic_code:
-                protein.append(self.genetic_code[codon])
-            else:
-                protein.append('X')
-        return ''.join(protein)
 
     def get_sequences_file_path(self):
         """Get the path to the wildtype_sequences.json file"""
@@ -2735,24 +2732,24 @@ class MutationExtractorPage(ctk.CTkFrame):
     def refresh_reference_sequences(self):
         """Refresh the dropdown with available reference sequences"""
         sequences_db = self.load_saved_sequences()
+        self.saved_sequences = sequences_db # Store for get_reference_protein_sequence
+        
         if sequences_db:
             sequence_names = list(sequences_db.keys())
             self.ref_dropdown.configure(values=sequence_names)
             if sequence_names:
-                self.ref_sequence_var.set(sequence_names[0])
+                self.reference_var.set(sequence_names[0])
                 self.status_label.configure(text=f"Loaded {len(sequence_names)} reference sequence(s)", text_color="green")
             else:
                 self.ref_dropdown.configure(values=["No sequences available"])
-                self.ref_sequence_var.set("")
+                self.reference_var.set("")
         else:
             self.ref_dropdown.configure(values=["No sequences available"])
-            self.ref_sequence_var.set("")
+            self.reference_var.set("")
             self.status_label.configure(text="No saved sequences found. Save sequences in Input tab first.", text_color="orange")
 
     def browse_fasta_file(self):
         """Browse and select FASTA file"""
-        from tkinter import filedialog
-        
         file_path = filedialog.askopenfilename(
             title="Select FASTA File",
             filetypes=[("FASTA files", "*.fasta *.fas *.fa"), ("All files", "*.*")]
@@ -2760,6 +2757,7 @@ class MutationExtractorPage(ctk.CTkFrame):
         
         if file_path:
             self.fasta_path_var.set(file_path)
+            self.fasta_file_path = file_path # Store for extract_mutations
             self.preview_fasta_file(file_path)
 
     def preview_fasta_file(self, file_path):
@@ -2786,55 +2784,48 @@ class MutationExtractorPage(ctk.CTkFrame):
             self.status_label.configure(text=f"Error reading FASTA file: {str(e)}", text_color="red")
 
     def parse_fasta(self, file_path):
-        """Parse FASTA file and return list of (header, sequence) tuples"""
+        """Parse FASTA file into a list of (header, sequence) tuples"""
         sequences = []
-        try:
-            with open(file_path, 'r') as f:
-                current_header = None
-                current_sequence = []
-                
-                for line in f:
-                    line = line.strip()
-                    if line.startswith('>'):
-                        # Save previous sequence if exists
-                        if current_header is not None:
-                            sequences.append((current_header, ''.join(current_sequence)))
-                        # Start new sequence
-                        current_header = line[1:]  # Remove '>'
-                        current_sequence = []
-                    elif line and current_header is not None:
-                        current_sequence.append(line.upper())
-                
-                # Don't forget the last sequence
-                if current_header is not None:
-                    sequences.append((current_header, ''.join(current_sequence)))
-                    
-        except Exception as e:
-            raise Exception(f"Error parsing FASTA file: {str(e)}")
-        
+        current_header = None
+        current_sequence = []
+        with open(file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith('>'):
+                    if current_header:
+                        sequences.append((current_header, "".join(current_sequence)))
+                    current_header = line[1:].split(' ')[0] # Take first word as ID
+                    current_sequence = []
+                else:
+                    current_sequence.append(line)
+            if current_header:
+                sequences.append((current_header, "".join(current_sequence)))
         return sequences
 
-    def get_reference_protein_sequence(self):
-        """Get the reference protein sequence from selected DNA sequence"""
-        ref_name = self.ref_sequence_var.get()
-        if not ref_name or ref_name == "No sequences available":
-            raise Exception("Please select a reference sequence")
-        
-        sequences_db = self.load_saved_sequences()
-        if ref_name not in sequences_db:
-            raise Exception(f"Reference sequence '{ref_name}' not found")
-        
-        dna_sequence = sequences_db[ref_name]
-        
-        # Remove flanking regions (30bp from each end)
-        if len(dna_sequence) <= 60:
-            raise Exception("Reference DNA sequence is too short (must be >60bp with flanking regions)")
-        
-        coding_sequence = dna_sequence[30:-30]
-        protein_sequence = self.translate_dna_to_protein(coding_sequence)
-        
-        return protein_sequence
+    def is_dna_sequence(self, sequence):
+        """Check if a sequence appears to be DNA"""
+        return bool(re.match(r'^[ACGTNacgtn]+$', sequence))
 
+    def get_reference_protein_sequence(self):
+        """Get the protein sequence for the selected reference"""
+        selected_ref = self.reference_var.get()
+        if selected_ref in self.saved_sequences:
+            
+            # Re-accessing the saved sequences to get the correct entry
+            sequences_db = self.load_saved_sequences()
+            if selected_ref in sequences_db:
+                dna_sequence = sequences_db[selected_ref]
+                flank_size = 30 # Defaulting to 30 as used in PrimerGenerator
+                if len(dna_sequence) > 2 * flank_size:
+                    coding_dna = dna_sequence[flank_size:-flank_size]
+                else:
+                    coding_dna = dna_sequence # If too short, use the whole thing.
+
+                return translate_dna_to_protein(coding_dna)
+        return ""
+    
     def simple_pairwise_alignment(self, seq1, seq2):
         """
         Simple pairwise alignment using dynamic programming (Needleman-Wunsch-like)
@@ -2952,6 +2943,24 @@ class MutationExtractorPage(ctk.CTkFrame):
         except Exception as e:
             raise Exception(f"Alignment error: {str(e)}")
 
+    def display_mutations(self, mutations_found):
+        """Display found mutations in a message box"""
+        if not mutations_found:
+            messagebox.showinfo("Mutations Found", "No mutations found between the reference and FASTA sequences.")
+            return
+        
+        message = "Mutations found:\n\n"
+        for header, mut_list in mutations_found:
+            message += f"Sequence '{header}':\n"
+            if mut_list:
+                message += ", ".join(mut_list) + "\n"
+            else:
+                message += "No mutations detected.\n"
+            message += "\n"
+        
+        messagebox.showinfo("Mutations Found", message)
+        self.status_label.configure(text=f"Extracted mutations for {len(mutations_found)} sequence(s)", text_color="green")
+
     def extract_mutations(self):
         """Main function to extract mutations from FASTA sequences using alignment"""
         try:
@@ -3049,15 +3058,6 @@ class MutationExtractorPage(ctk.CTkFrame):
         except Exception as e:
             self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
 
-class GithubButton(ctk.CTkFrame):
-    def __init__(self, master, url, text="GitHub", **kwargs):
-        super().__init__(master, **kwargs)
-        self.url = url
-        self.button = ctk.CTkButton(self, text=text, command=self.open_link, fg_color="#222", text_color="white")
-        self.button.pack(fill="x", padx=2, pady=2)
-
-    def open_link(self):
-        webbrowser.open(self.url)
 
 if __name__ == "__main__":
     app = MutagenesisApp()
