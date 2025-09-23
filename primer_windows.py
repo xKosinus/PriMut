@@ -79,7 +79,7 @@ class ScrollableFrameWithWheel(ctk.CTkScrollableFrame):
         super().__init__(*args, **kwargs)
 
         def on_mousewheel(event):
-            self._parent_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            self._parent_canvas.yview_scroll(int(-1 * (event.delta * 0.2)), "units")
 
         def on_mousewheel_linux_up(event):
             self._parent_canvas.yview_scroll(-1, "units")
