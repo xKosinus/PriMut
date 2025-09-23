@@ -1,7 +1,7 @@
 # Installation
 To create the .exe file use PyInstaller:
 ```
-pyinstaller primer.py --onefile --windowed --icon=primut.ico --hidden-import=primer3
+pyinstaller primer_windows.py --onefile --windowed --icon=primut.ico --hidden-import=primer3
 ```
 
 
