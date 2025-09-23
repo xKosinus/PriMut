@@ -1,3 +1,10 @@
+# Installation
+To create the .exe file use PyInstaller:
+```
+pyinstaller primer.py --onefile --windowed --icon=primut.ico --hidden-import=primer3
+```
+
+
 # Mutagenesis_Protocol
 This repository provides a complete workflow for site-directed mutagenesis experiment planning with a modern Windows GUI — from primer design and mutation step planning to generating printable protocols and tube labels. It is tailored for molecular biology workflows involving multi-site mutagenesis with automated primer design and detailed PDF output.
 
