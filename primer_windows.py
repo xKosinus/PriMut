@@ -74,6 +74,32 @@ def mutation_position(mutation):
     return int(matches[0]) if matches else 0
 
 
+class ScrollableFrameWithWheel(ctk.CTkScrollableFrame):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        def on_mousewheel(event):
+            self._parent_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def on_mousewheel_linux_up(event):
+            self._parent_canvas.yview_scroll(-1, "units")
+
+        def on_mousewheel_linux_down(event):
+            self._parent_canvas.yview_scroll(1, "units")
+
+        self.bind("<Enter>", lambda e: [
+            self.bind_all("<MouseWheel>", on_mousewheel),
+            self.bind_all("<Button-4>", on_mousewheel_linux_up),
+            self.bind_all("<Button-5>", on_mousewheel_linux_down),
+        ])
+
+        self.bind("<Leave>", lambda e: [
+            self.unbind_all("<MouseWheel>"),
+            self.unbind_all("<Button-4>"),
+            self.unbind_all("<Button-5>"),
+        ])
+
+
 class PrimerGenerator:
     """Site-directed mutagenesis primer generator with improved 3'-extension handling."""
 
@@ -506,6 +532,226 @@ class PrimerGenerator:
         print(f"Primer JSON saved to {filepath_json}")
 
 
+class LabelPrintingSystem:
+    """Complete label printing system for Herma 10900 label sheets"""
+    def __init__(self):
+        # Herma 10900 label specifications
+        self.columns = 7
+        self.rows = 27
+        self.label_width = 25.3 * mm
+        self.label_height = 9.9 * mm
+        self.horizontal_spacing = 2.5 * mm
+        self.top_margin = 13.5 * mm
+        self.left_margin = 10.3 * mm
+        self.font_size = 5.5
+
+    def generate_labels_pdf(self, selected_variants, start_row, start_col, output_path):
+        """Generate PDF with selected variants starting from specified position"""
+        page_width, page_height = A4
+        c = canvas.Canvas(str(output_path), pagesize=A4)
+        c.setFont("Helvetica", self.font_size)
+
+        # Sort variants for consistent ordering
+        sorted_variants = sorted(selected_variants)
+        
+        variant_index = 0
+        total_variants = len(sorted_variants)
+        current_row = start_row
+        current_col = start_col
+        page_number = 1
+
+        while variant_index < total_variants:
+            # Calculate position
+            x = self.left_margin + current_col * (self.label_width + self.horizontal_spacing)
+            y = page_height - self.top_margin - (current_row + 1) * self.label_height
+
+            # Draw label
+            label_text = sorted_variants[variant_index]
+            text_x = x + self.label_width / 2
+            text_y = y + self.label_height / 2 - self.font_size / 2
+            c.drawCentredString(text_x, text_y, label_text)
+            
+            variant_index += 1
+
+            # Move to next position (left to right, top to bottom)
+            current_col += 1
+            if current_col >= self.columns:
+                current_col = 0
+                current_row += 1
+                if current_row >= self.rows:
+                    # Start new page
+                    if variant_index < total_variants:
+                        c.showPage()
+                        c.setFont("Helvetica", self.font_size)
+                        current_row = 0
+                        current_col = 0
+                        page_number += 1
+
+        c.save()
+        return True
+
+
+class LabelSelectionWindow:
+    """Interactive window for selecting starting position on label sheet"""
+    def __init__(self, parent, selected_variants, output_dir, controller):
+        self.parent = parent
+        self.selected_variants = selected_variants
+        self.output_dir = output_dir
+        self.controller = controller
+        self.label_system = LabelPrintingSystem()
+        
+        # Create window
+        self.window = ctk.CTkToplevel(parent)
+        self.window.title("Label Sheet Position Selection")
+        self.window.geometry("800x600")
+        self.window.transient(parent)
+        self.window.after(100, self.window.grab_set)
+
+        # Configure grid
+        self.window.grid_columnconfigure(0, weight=1)
+        self.window.grid_rowconfigure(2, weight=1)
+
+        # Selected cell tracking
+        self.selected_cell = None
+        self.cell_buttons = {}
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Title
+        title_label = ctk.CTkLabel(self.window, 
+                                  text=f"Select Starting Position for {len(self.selected_variants)} Labels",
+                                  font=self.controller.LARGEFONT)
+        title_label.grid(row=0, column=0, pady=20, sticky="ew")
+
+        # Info label
+        info_label = ctk.CTkLabel(self.window, 
+                                 text="Click on a cell to select the starting position. Labels will fill left-to-right, top-to-bottom.",
+                                 font=self.controller.MEDIUMFONT)
+        info_label.grid(row=1, column=0, pady=10, sticky="ew")
+
+        # Grid frame with proper configuration
+        grid_frame = ScrollableFrameWithWheel(self.window, height=400)
+        grid_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=10)
+        
+        # Configure grid frame columns to be uniform
+        for col in range(self.label_system.columns):
+            grid_frame.grid_columnconfigure(col, weight=1, uniform="col")
+
+        # Create grid of buttons (7 columns x 27 rows)
+        for row in range(self.label_system.rows):
+            for col in range(self.label_system.columns):
+                btn = ctk.CTkButton(grid_frame, 
+                                   text=f"R{row+1}\nC{col+1}",
+                                   width=60, height=40,
+                                   font=ctk.CTkFont(size=11),
+                                   command=lambda r=row, c=col: self.select_cell(r, c))
+                btn.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
+                self.cell_buttons[(row, col)] = btn
+
+        # Buttons frame
+        button_frame = ctk.CTkFrame(self.window)
+        button_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=10)
+
+        # Status label
+        self.status_label = ctk.CTkLabel(button_frame, text="Select a starting position", 
+                                        font=self.controller.MEDIUMFONT)
+        self.status_label.grid(row=0, column=0, columnspan=3, pady=10)
+
+        # Action buttons
+        self.generate_btn = ctk.CTkButton(button_frame, text="Generate Labels PDF", 
+                                         command=self.generate_pdf, state="disabled")
+        self.generate_btn.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+
+        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=self.window.destroy)
+        cancel_btn.grid(row=1, column=1, padx=10, pady=10, sticky="w")
+
+        # Preview button
+        self.preview_btn = ctk.CTkButton(button_frame, text="Preview Selection", 
+                                   command=self.preview_selection, state="disabled")
+        self.preview_btn.grid(row=1, column=2, padx=10, pady=10, sticky="w")
+
+    def select_cell(self, row, col):
+        """Handle cell selection"""
+        # Reset previous selection
+        if self.selected_cell:
+            prev_row, prev_col = self.selected_cell
+            self.cell_buttons[(prev_row, prev_col)].configure(fg_color=("gray75", "gray25"))
+
+        # Highlight new selection
+        self.selected_cell = (row, col)
+        self.cell_buttons[(row, col)].configure(fg_color="green")
+        
+        # Update status and enable buttons
+        self.status_label.configure(text=f"Selected: Row {row+1}, Column {col+1}")
+        self.generate_btn.configure(state="normal")
+        self.preview_btn.configure(state="normal")
+
+    def preview_selection(self):
+        """Preview which cells will be filled"""
+        if not self.selected_cell:
+            return
+
+        # Reset all buttons to default color first
+        for (row, col), btn in self.cell_buttons.items():
+            if (row, col) != self.selected_cell:
+                btn.configure(fg_color=("gray75", "gray25"))
+
+        # Highlight cells that will be filled
+        start_row, start_col = self.selected_cell
+        current_row, current_col = start_row, start_col
+        labels_placed = 0
+        total_labels = len(self.selected_variants)
+
+        while labels_placed < total_labels and current_row < self.label_system.rows:
+            # Highlight current cell
+            if (current_row, current_col) in self.cell_buttons:
+                if (current_row, current_col) == self.selected_cell:
+                    self.cell_buttons[(current_row, current_col)].configure(fg_color="green")
+                else:
+                    self.cell_buttons[(current_row, current_col)].configure(fg_color="blue")
+            
+            labels_placed += 1
+            
+            # Move to next position
+            current_col += 1
+            if current_col >= self.label_system.columns:
+                current_col = 0
+                current_row += 1
+
+        # Update status
+        if labels_placed < total_labels:
+            self.status_label.configure(
+                text=f"Preview: {labels_placed} labels fit on this page, {total_labels - labels_placed} continue on next page"
+            )
+        else:
+            self.status_label.configure(text=f"Preview: All {total_labels} labels fit on this page")
+
+    def generate_pdf(self):
+        """Generate the labels PDF"""
+        if not self.selected_cell:
+            messagebox.showwarning("Warning", "Please select a starting position")
+            return
+
+        try:
+            start_row, start_col = self.selected_cell
+            output_path = Path(self.output_dir) / "protocols" / "selected_variant_labels.pdf"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            success = self.label_system.generate_labels_pdf(
+                self.selected_variants, start_row, start_col, output_path
+            )
+
+            if success:
+                messagebox.showinfo("Success", f"Labels PDF generated successfully!\nSaved to: {output_path}")
+                self.window.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to generate labels PDF")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error generating PDF: {str(e)}")
+
+
 class MutagenesisProtocol:
     def __init__(self, variant_input, max_mutations_per_step, variant_prefix, output_dir_path,
                  start_col=2, start_row=16, list_existing_as_steps=False, undo_stack=None):
@@ -839,6 +1085,46 @@ class MutagenesisProtocol:
         print(f"PDF generated: {self.pdf_path}")
         print(f"Databank updated: {self.databank_file}")
 
+    def undo_change(self):
+        databank_path = Path(self.controller.output_dir.get()) / "protocols" / "variant_databank.json"
+        output_dir = Path(self.controller.output_dir.get())
+        protocols_dir = output_dir / "protocols"
+        
+        try:
+            if self.controller.undo_stack:
+                last_state = self.controller.undo_stack.pop()
+                
+                with open(databank_path, "w") as f:
+                    json.dump(last_state, f, indent=2)
+                
+                primer_files = [
+                    output_dir / "primer_list.txt",
+                    output_dir / "primer_list.csv", 
+                    output_dir / "primer_list.json"
+                ]
+                
+                for primer_file in primer_files:
+                    if primer_file.exists():
+                        primer_file.unlink()
+                        print(f"Removed primer file: {primer_file}")
+                
+                protocol_files = [
+                    protocols_dir / "mutagenesis_protocol.pdf",
+                    protocols_files / "protocol_data.json",
+                    protocols_dir / "selected_variant_labels.pdf"
+                ]
+                
+                for protocol_file in protocol_files:
+                    if protocol_file.exists():
+                        protocol_file.unlink()
+                        print(f"Removed protocol file: {protocol_file}")
+                
+                self.status_label.configure(text="Last change undone successfully - all files cleaned up", text_color="green")
+            else:
+                self.status_label.configure(text="No changes to undo", text_color="orange")
+        except Exception as e:
+            self.status_label.configure(text=f"Undo failed: {str(e)}", text_color="red")
+
 
 # Tkinter GUI Classes
 ctk.set_appearance_mode("dark")
@@ -958,7 +1244,7 @@ class MutagenesisApp(ctk.CTk):
         self.output_dir = ctk.StringVar(value=str(Path.cwd() / "Mutagenesis"))
 
         # Left navigation frame
-        nav_frame = ctk.CTkFrame(self, width=200)
+        nav_frame = ctk.CTkFrame(self)
         nav_frame.grid(row=0, column=0, sticky="nsew", padx=(5,2), pady=5)
         nav_frame.grid_propagate(False)
         nav_frame.grid_columnconfigure(0, weight=1)
@@ -1040,7 +1326,9 @@ class InputPage(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=0, minsize=200)
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure(2, weight=0)
-        self.grid_rowconfigure(5, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(4, weight=2)  
+        self.grid_rowconfigure(5, weight=0)
 
         # Initialize sequence management variables
         self.sequence_undo_stack = []
@@ -1077,12 +1365,13 @@ class InputPage(ctk.CTkFrame):
 
         # Frame for DNA sequence input and info button
         seq_frame = ctk.CTkFrame(self)
-        seq_frame.grid(row=2, column=1, columnspan=2, pady=5, padx=5, sticky="ew")
+        seq_frame.grid(row=2, column=1, columnspan=2, pady=5, padx=5, sticky="nsew")
         seq_frame.grid_columnconfigure(0, weight=1)
+        seq_frame.grid_rowconfigure(0, weight=1)
 
         self.seq_text = PlaceholderTextbox(seq_frame, placeholder="Enter wildtype DNA sequence here...",
                                           placeholder_fg="gray", text_fg="white", height=150)
-        self.seq_text.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.seq_text.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
         question_seq_btn = ctk.CTkButton(seq_frame, text="?", width=30, height=30, 
                                         command=self.show_info_sequence)
@@ -1108,11 +1397,12 @@ class InputPage(ctk.CTkFrame):
         
         # Frame for variant text and info button
         var_frame = ctk.CTkFrame(self)
-        var_frame.grid(row=4, column=1, columnspan=2, pady=5, padx=5, sticky="ew")
+        var_frame.grid(row=4, column=1, columnspan=2, pady=5, padx=5, sticky="nsew")
         var_frame.grid_columnconfigure(0, weight=1)
+        var_frame.grid_rowconfigure(0, weight=1)
         
         self.var_text = ctk.CTkTextbox(var_frame, height=150, font=self.controller.SMALLFONT)
-        self.var_text.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.var_text.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         self.var_text.insert("1.0", "S19V, S30V, Q424V, A431E\nK3Q, K36R, D76Q, L167A, Q424V\n")
 
         question_btn = ctk.CTkButton(var_frame, text="?", width=30, height=30, 
@@ -1151,7 +1441,7 @@ class InputPage(ctk.CTkFrame):
         button_frame.grid(row=6, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
         
         run_btn = ctk.CTkButton(button_frame, text="Run Complete Workflow", 
-                               font=self.controller.MEDIUMFONT, command=self.run_workflow)
+                                font=self.controller.MEDIUMFONT, command=self.run_workflow)
         run_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
         
         undo_btn = ctk.CTkButton(button_frame, text="Undo Last Change", 
@@ -1161,7 +1451,8 @@ class InputPage(ctk.CTkFrame):
     def create_status_section(self):
         self.status_label = ctk.CTkLabel(self, text="Ready to run workflow", 
                                         font=self.controller.SMALLFONT, text_color="gray")
-        self.status_label.grid(row=7, column=0, columnspan=3, sticky="w", padx=10)
+        self.status_label.grid(row=7, column=0, columnspan=3, sticky="w", padx=10,
+                               pady=(0, 10))
 
     def get_dna_sequence(self):
         """Get the DNA sequence from the input field, cleaned and uppercase"""
@@ -1266,7 +1557,7 @@ class InputPage(ctk.CTkFrame):
         title_label.grid(row=0, column=0, pady=20, sticky="ew")
 
         # Sequences list frame
-        list_frame = ctk.CTkScrollableFrame(manage_window)
+        list_frame = ScrollableFrameWithWheel(manage_window)
         list_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=10)
         list_frame.grid_columnconfigure(1, weight=1)
 
@@ -1695,7 +1986,7 @@ class VariantProteinPage(ctk.CTkFrame, BaseProteinPage):
             if check_var.get() == 1:
                 selected[var_id] = True
         return selected
-    
+
     def generate_variant_protein_sequences(self):
         input_page = self.controller.frames[InputPage]
         wt_dna = input_page.get_dna_sequence()
@@ -1841,7 +2132,7 @@ class DatabankPage(ctk.CTkFrame):
         ctk.CTkLabel(variant_frame, text="Variants:", font=self.controller.MEDIUMFONT).grid(
             row=0, column=0, sticky="w", padx=10, pady=(10, 5))
 
-        self.variant_listbox = ctk.CTkScrollableFrame(variant_frame)
+        self.variant_listbox = ScrollableFrameWithWheel(variant_frame)
         self.variant_listbox.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
     def create_search_section(self, parent):
@@ -1853,7 +2144,7 @@ class DatabankPage(ctk.CTkFrame):
         ctk.CTkLabel(search_main_frame, text="Search & Filter:", font=self.controller.MEDIUMFONT).grid(
             row=0, column=0, sticky="w", padx=10, pady=(10, 5))
 
-        self.search_frame = ctk.CTkScrollableFrame(search_main_frame)
+        self.search_frame = ScrollableFrameWithWheel(search_main_frame)
         self.search_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         self.search_frame.grid_columnconfigure(0, weight=1)
 
@@ -1928,19 +2219,31 @@ class DatabankPage(ctk.CTkFrame):
         button_frame = ctk.CTkFrame(self)
         button_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
         
-        buttons = [
+        # First row buttons
+        first_row_buttons = [
             ("Select All", self.select_all, 0),
             ("Deselect All", self.deselect_all, 1),
             ("Delete Selected Variants", self.delete_variants, 2),
-            ("Undo Delete", self.undo_delete, 3),
-            ("Print Labels", self.print_selected_labels, 4),
-            ("Refresh", self.refresh_variants, 5),
-            ("View Proteins", lambda: self.controller.show_frame(VariantProteinPage), 6)
+            ("Undo Delete", self.undo_delete, 3)
         ]
         
-        for text, command, col in buttons:
-            btn = ctk.CTkButton(button_frame, text=text, command=command)
-            btn.grid(row=0, column=col, sticky="w", padx=10, pady=10)
+        # Second row buttons
+        second_row_buttons = [
+            ("Print Labels", self.print_selected_labels, 0),
+            ("Refresh", self.refresh_variants, 1),
+            ("View Proteins", lambda: self.controller.show_frame(VariantProteinPage), 2),
+            ("Add Variants", self.add_variants_window, 3)
+        ]
+        
+        # Create first row
+        for text, command, col in first_row_buttons:
+            btn = ctk.CTkButton(button_frame, text=text, command=command, width=160)
+            btn.grid(row=0, column=col, sticky="w", padx=10, pady=5)
+        
+        # Create second row
+        for text, command, col in second_row_buttons:
+            btn = ctk.CTkButton(button_frame, text=text, command=command, width=160)
+            btn.grid(row=1, column=col, sticky="w", padx=10, pady=5)
 
     def create_status_section(self):
         self.status_box = ctk.CTkLabel(self, text="", text_color="green")
@@ -2148,6 +2451,11 @@ class DatabankPage(ctk.CTkFrame):
         self.refresh_variants()
         self.status_box.configure(text=f"Restored {restored_count} variant(s).", text_color="green")
 
+    def add_variants_window(self):
+        """Open window for adding new variants to the databank"""
+        output_dir = self.controller.output_dir.get()
+        add_window = AddVariantsWindow(self, output_dir, self.controller)
+
     def print_selected_labels(self):
         """Print labels for selected variants"""
         selected_variants = []
@@ -2163,243 +2471,217 @@ class DatabankPage(ctk.CTkFrame):
         output_dir = self.controller.output_dir.get()
         label_window = LabelSelectionWindow(self, selected_variants, output_dir, self.controller)
 
-
-class LabelPrintingSystem:
-    def __init__(self):
-        # Herma 10900 label specifications
-        self.columns = 7
-        self.rows = 27
-        self.label_width = 25.3 * mm
-        self.label_height = 9.9 * mm
-        self.horizontal_spacing = 2.5 * mm
-        self.top_margin = 13.5 * mm
-        self.left_margin = 10.3 * mm
-        self.font_size = 5.5
-
-    def generate_labels_pdf(self, selected_variants, start_row, start_col, output_path):
-        """Generate PDF with selected variants starting from specified position"""
-        page_width, page_height = A4
-        c = canvas.Canvas(str(output_path), pagesize=A4)
-        c.setFont("Helvetica", self.font_size)
-
-        # Sort variants for consistent ordering
-        sorted_variants = sorted(selected_variants)
-        
-        variant_index = 0
-        total_variants = len(sorted_variants)
-        current_row = start_row
-        current_col = start_col
-        page_number = 1
-
-        while variant_index < total_variants:
-            # Calculate position
-            x = self.left_margin + current_col * (self.label_width + self.horizontal_spacing)
-            y = page_height - self.top_margin - (current_row + 1) * self.label_height
-
-            # Draw label
-            label_text = sorted_variants[variant_index]
-            text_x = x + self.label_width / 2
-            text_y = y + self.label_height / 2 - self.font_size / 2
-            c.drawCentredString(text_x, text_y, label_text)
-            
-            variant_index += 1
-
-            # Move to next position (left to right, top to bottom)
-            current_col += 1
-            if current_col >= self.columns:
-                current_col = 0
-                current_row += 1
-                if current_row >= self.rows:
-                    # Start new page
-                    if variant_index < total_variants:
-                        c.showPage()
-                        c.setFont("Helvetica", self.font_size)
-                        current_row = 0
-                        current_col = 0
-                        page_number += 1
-
-        c.save()
-        return True
-
-
-class LabelSelectionWindow:
-    def __init__(self, parent, selected_variants, output_dir, controller):
+class AddVariantsWindow:
+    def __init__(self, parent, output_dir, controller):
         self.parent = parent
-        self.selected_variants = selected_variants
         self.output_dir = output_dir
         self.controller = controller
-        self.label_system = LabelPrintingSystem()
         
         # Create window
         self.window = ctk.CTkToplevel(parent)
-        self.window.title("Label Sheet Position Selection")
-        self.window.geometry("800x600")
+        self.window.title("Add New Variants to Databank")
+        self.window.geometry("900x600")
         self.window.transient(parent)
-        self.window.after(100, self.window.grab_set)
-
-        # Configure grid
+        
+        # Configure main grid weights
         self.window.grid_columnconfigure(0, weight=1)
         self.window.grid_rowconfigure(2, weight=1)
 
-        # Selected cell tracking
-        self.selected_cell = None
-        self.cell_buttons = {}
+        # Track variant entries
+        self.variant_entries = []
 
+        # Setup UI first, then grab focus
         self.setup_ui()
+        
+        # Delay the grab_set to ensure window is fully rendered
+        self.window.after(100, self.window.grab_set)
 
     def setup_ui(self):
         # Title
         title_label = ctk.CTkLabel(self.window, 
-                                  text=f"Select Starting Position for {len(self.selected_variants)} Labels",
-                                  font=self.controller.LARGEFONT)
-        title_label.grid(row=0, column=0, pady=20, sticky="ew")
+                                text="Add New Variants to Databank",
+                                font=self.controller.LARGEFONT)
+        title_label.grid(row=0, column=0, pady=20, padx=20, sticky="ew")
 
-        # Info label
-        info_label = ctk.CTkLabel(self.window, 
-                                 text="Click on a cell to select the starting position. Labels will fill left-to-right, top-to-bottom.",
-                                 font=self.controller.MEDIUMFONT)
-        info_label.grid(row=1, column=0, pady=10, sticky="ew")
+        # Prefix input frame
+        prefix_frame = ctk.CTkFrame(self.window)
+        prefix_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
+        
+        # Configure prefix frame grid
+        prefix_frame.grid_columnconfigure(1, weight=1)
 
-        # Grid frame
-        grid_frame = ctk.CTkScrollableFrame(self.window)
-        grid_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=10)
+        ctk.CTkLabel(prefix_frame, text="Variant Prefix:", 
+                    font=self.controller.MEDIUMFONT).grid(
+            row=0, column=0, sticky="w", padx=10, pady=10)
 
-        # Create grid of buttons (7 columns x 27 rows)
-        for row in range(self.label_system.rows):
-            for col in range(self.label_system.columns):
-                btn = ctk.CTkButton(grid_frame, 
-                                   text=f"R{row+1}\nC{col+1}",
-                                   width=60, height=40,
-                                   font=ctk.CTkFont(size=8),
-                                   command=lambda r=row, c=col: self.select_cell(r, c))
-                btn.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
-                self.cell_buttons[(row, col)] = btn
+        self.prefix_var = ctk.StringVar(value="KWE_TA_A")
+        self.prefix_entry = ctk.CTkEntry(prefix_frame, textvariable=self.prefix_var, width=150)
+        self.prefix_entry.grid(row=0, column=1, sticky="w", padx=10, pady=10)
+
+        ctk.CTkLabel(prefix_frame, text="(Auto-generated: PREFIX01, PREFIX02, etc.)", 
+                    font=self.controller.SMALLFONT, text_color="gray").grid(
+            row=0, column=2, sticky="w", padx=10, pady=10)
+
+        # Variants table frame
+        table_frame = ctk.CTkFrame(self.window)
+        table_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=10)
+        
+        # Configure table frame grid
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(1, weight=1)
+
+        # Table header
+        header_frame = ctk.CTkFrame(table_frame)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        
+        # Configure header frame grid (single column now)
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(header_frame, text="Mutations (comma-separated)", 
+                    font=self.controller.MEDIUMFONT).grid(
+            row=0, column=0, padx=10, pady=10, sticky="w")
+
+        # Scrollable variants table
+        self.variants_scroll_frame = ScrollableFrameWithWheel(table_frame)
+        self.variants_scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        
+        # Configure scrollable frame grid (single column now)
+        self.variants_scroll_frame.grid_columnconfigure(0, weight=1)
+
+        # Initialize with some empty rows
+        self.create_variant_rows(10)
 
         # Buttons frame
         button_frame = ctk.CTkFrame(self.window)
         button_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=10)
 
         # Status label
-        self.status_label = ctk.CTkLabel(button_frame, text="Select a starting position", 
+        self.status_label = ctk.CTkLabel(button_frame, 
+                                        text="Enter variant information and click Add to save", 
                                         font=self.controller.MEDIUMFONT)
-        self.status_label.grid(row=0, column=0, columnspan=3, pady=10)
+        self.status_label.grid(row=0, column=0, columnspan=4, pady=10, padx=10)
 
         # Action buttons
-        self.generate_btn = ctk.CTkButton(button_frame, text="Generate Labels PDF", 
-                                         command=self.generate_pdf, state="disabled")
-        self.generate_btn.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+        add_btn = ctk.CTkButton(button_frame, text="Add Variants", 
+                               command=self.add_variants, font=self.controller.MEDIUMFONT)
+        add_btn.grid(row=1, column=0, padx=10, pady=10, sticky="w")
 
         cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=self.window.destroy)
         cancel_btn.grid(row=1, column=1, padx=10, pady=10, sticky="w")
 
-        # Preview button
-        preview_btn = ctk.CTkButton(button_frame, text="Preview Selection", 
-                                   command=self.preview_selection, state="disabled")
-        preview_btn.grid(row=1, column=2, padx=10, pady=10, sticky="w")
+        # Utility buttons
+        clear_btn = ctk.CTkButton(button_frame, text="Clear All", command=self.clear_all_entries)
+        clear_btn.grid(row=1, column=2, padx=10, pady=10, sticky="w")
 
-        # Store reference to preview button
-        self.preview_btn = preview_btn
+        add_rows_btn = ctk.CTkButton(button_frame, text="Add More Rows", command=self.add_more_rows)
+        add_rows_btn.grid(row=1, column=3, padx=10, pady=10, sticky="w")
 
-    def select_cell(self, row, col):
-        """Handle cell selection"""
-        # Reset previous selection
-        if self.selected_cell:
-            prev_row, prev_col = self.selected_cell
-            self.cell_buttons[(prev_row, prev_col)].configure(fg_color=("gray75", "gray25"))
-
-        # Highlight new selection
-        self.selected_cell = (row, col)
-        self.cell_buttons[(row, col)].configure(fg_color="green")
-        
-        # Update status and enable buttons
-        self.status_label.configure(text=f"Selected: Row {row+1}, Column {col+1}")
-        self.generate_btn.configure(state="normal")
-        self.preview_btn.configure(state="normal")
-
-    def preview_selection(self):
-        """Preview which cells will be filled"""
-        if not self.selected_cell:
-            return
-
-        # Reset all buttons to default color first
-        for (row, col), btn in self.cell_buttons.items():
-            if (row, col) != self.selected_cell:
-                btn.configure(fg_color=("gray75", "gray25"))
-
-        # Highlight cells that will be filled
-        start_row, start_col = self.selected_cell
-        current_row, current_col = start_row, start_col
-        labels_placed = 0
-        total_labels = len(self.selected_variants)
-
-        while labels_placed < total_labels and current_row < self.label_system.rows:
-            # Highlight current cell
-            if (current_row, current_col) in self.cell_buttons:
-                if (current_row, current_col) == self.selected_cell:
-                    self.cell_buttons[(current_row, current_col)].configure(fg_color="green")
-                else:
-                    self.cell_buttons[(current_row, current_col)].configure(fg_color="blue")
+    def create_variant_rows(self, num_rows=10):
+        """Create empty variant input rows"""
+        for i in range(num_rows):
+            row_num = len(self.variant_entries)
             
-            labels_placed += 1
+            # Only mutations entry (no name entry anymore)
+            mutations_var = ctk.StringVar()
+            mutations_entry = ctk.CTkEntry(self.variants_scroll_frame, textvariable=mutations_var,
+                                        placeholder_text="e.g., S19V, Q424V, A431E")
+            mutations_entry.grid(row=row_num, column=0, padx=5, pady=2, sticky="ew")
             
-            # Move to next position
-            current_col += 1
-            if current_col >= self.label_system.columns:
-                current_col = 0
-                current_row += 1
+            # Store references (simplified structure)
+            self.variant_entries.append({
+                'mutations_var': mutations_var,
+                'mutations_entry': mutations_entry
+            })
 
-        # Update status
-        if labels_placed < total_labels:
-            self.status_label.configure(
-                text=f"Preview: {labels_placed} labels fit on this page, {total_labels - labels_placed} continue on next page"
-            )
-        else:
-            self.status_label.configure(text=f"Preview: All {total_labels} labels fit on this page")
+    def clear_all_entries(self):
+        """Clear all entry fields"""
+        for entry_dict in self.variant_entries:
+            entry_dict['mutations_var'].set("")
+        self.status_label.configure(text="All entries cleared")
 
-    def generate_pdf(self):
-        """Generate the labels PDF"""
-        if not self.selected_cell:
-            messagebox.showwarning("Warning", "Please select a starting position")
-            return
-
+    def add_variants(self):
+        """Add variants to the databank"""
         try:
-            start_row, start_col = self.selected_cell
-            output_path = Path(self.output_dir) / "protocols" / "selected_variant_labels.pdf"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            prefix = self.prefix_var.get().strip()
+            if not prefix:
+                messagebox.showwarning("Warning", "Please enter a variant prefix")
+                return
 
-            success = self.label_system.generate_labels_pdf(
-                self.selected_variants, start_row, start_col, output_path
-            )
+            # Collect non-empty entries
+            variants_to_add = []
+            validation_errors = []
+            
+            for i, entry_dict in enumerate(self.variant_entries):
+                mutations = entry_dict['mutations_var'].get().strip()
+                
+                if mutations:  # Only process rows with mutations
+                    # Validate mutations format
+                    is_valid, error_msg = self.validate_mutations(mutations)
+                    if not is_valid:
+                        validation_errors.append(f"Row {i+1}: {error_msg}")
+                        continue
+                    
+                    variants_to_add.append({
+                        'mutations': mutations,
+                        'row': i+1
+                    })
 
-            if success:
-                messagebox.showinfo("Success", f"Labels PDF generated successfully!\nSaved to: {output_path}")
+            if validation_errors:
+                error_msg = "Validation errors found:\n\n" + "\n".join(validation_errors)
+                messagebox.showerror("Validation Error", error_msg)
+                return
+
+            if not variants_to_add:
+                messagebox.showwarning("Warning", "Please enter at least one variant with mutations")
+                return
+
+            # Load current databank and prepare backup for undo
+            databank = self.parent.controller.get_databank()
+            self.parent.controller.undo_stack.append(copy.deepcopy(databank))
+
+            # Add variants with auto-numbering
+            next_number = self.get_next_available_number()
+            added_variants = []
+            
+            for variant_data in variants_to_add:
+                # Generate variant ID automatically
+                variant_id = f"{prefix}{next_number:02d}"
+                next_number += 1
+                
+                # Check for duplicates
+                if variant_id in databank:
+                    overwrite = messagebox.askyesno("Duplicate Found", 
+                        f"Variant '{variant_id}' already exists. Overwrite?")
+                    if not overwrite:
+                        continue
+                
+                # Add to databank
+                databank[variant_id] = variant_data['mutations']
+                added_variants.append(variant_id)
+
+            if added_variants:
+                # Save databank
+                self.parent.controller.save_databank(databank)
+                
+                # Refresh parent databank display
+                self.parent.refresh_variants()
+                
+                # Show success message
+                success_msg = f"Successfully added {len(added_variants)} variant(s):\n\n"
+                success_msg += "\n".join([f"• {vid}: {databank[vid]}" for vid in added_variants])
+                messagebox.showinfo("Success", success_msg)
+                
+                self.status_label.configure(text=f"Added {len(added_variants)} variant(s) successfully")
+                
+                # Close window after successful addition
                 self.window.destroy()
             else:
-                messagebox.showerror("Error", "Failed to generate labels PDF")
+                self.status_label.configure(text="No variants were added")
 
         except Exception as e:
-            messagebox.showerror("Error", f"Error generating PDF: {str(e)}")
+            messagebox.showerror("Error", f"Error adding variants: {str(e)}")
+            self.status_label.configure(text=f"Error: {str(e)}")
 
-# Updated DatabankPage with Print Labels button
-def add_print_labels_button_to_databank():
-    """Function to add the print labels functionality to the existing DatabankPage"""
-    
-    # This would be added to the existing DatabankPage class
-    def print_selected_labels(self):
-        """Print labels for selected variants"""
-        # Get selected variants
-        selected_variants = []
-        for var_id, check_var in self.check_vars:
-            if check_var.get() == 1:
-                selected_variants.append(var_id)
-        
-        if not selected_variants:
-            messagebox.showwarning("Warning", "Please select variants to print labels for")
-            return
-        
-        # Open label selection window
-        output_dir = self.controller.output_dir.get()
-        label_window = LabelSelectionWindow(self, selected_variants, output_dir, self.controller)
 
 class ProtocolResultsPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -2434,7 +2716,7 @@ class ProtocolResultsPage(ctk.CTkFrame):
     def create_controls(self):
         controls_frame = ctk.CTkFrame(self)
         controls_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
-        
+
         refresh_btn = ctk.CTkButton(controls_frame, text="Refresh Results", command=self.refresh_results)
         refresh_btn.grid(row=0, column=0, sticky="w", padx=10, pady=10)
 
@@ -2550,7 +2832,7 @@ class PrimerPage(ctk.CTkFrame):
         refresh_btn.grid(row=0, column=1, sticky="w", padx=10, pady=10)
 
     def create_table_area(self):
-        self.scroll_frame = ctk.CTkScrollableFrame(self)
+        self.scroll_frame = ScrollableFrameWithWheel(self)
         self.scroll_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
 
     def load_primers(self):
@@ -2635,54 +2917,48 @@ class MutationExtractorPage(ctk.CTkFrame):
         
         # Configure grid for responsive layout
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(3, weight=1)  # FASTA content area
 
-        self.create_header()
-        self.create_reference_selection()
-        self.create_fasta_selection()
-        self.create_preview_area()
-        self.create_action_buttons()
-        self.create_status_section()
-
-        # Initialize
-        self.refresh_reference_sequences()
-
-    def create_header(self):
+        # Header frame
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
         header_frame.grid_columnconfigure(0, weight=1)
 
-        title = ctk.CTkLabel(header_frame, text="Mutation Extractor",
-                             corner_radius=10, fg_color="#4a90e2", text_color="white",
-                             font=self.controller.LARGEFONT, height=50)
+        title = ctk.CTkLabel(header_frame,
+                             text="Mutation Extractor",
+                             corner_radius=10,
+                             fg_color="#4a90e2",
+                             text_color="white",
+                             font=controller.LARGEFONT,
+                             height=50)
         title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
         back_btn = ctk.CTkButton(header_frame, text="Back to Input", 
-                                command=lambda: self.controller.show_frame(InputPage))
+                                command=lambda: controller.show_frame(InputPage))
         back_btn.grid(row=0, column=1, padx=10, pady=10, sticky="e")
 
-    def create_reference_selection(self):
+        # Reference sequence selection frame
         ref_frame = ctk.CTkFrame(self)
         ref_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
         ref_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(ref_frame, text="Reference Sequence:", font=self.controller.MEDIUMFONT).grid(
+        ctk.CTkLabel(ref_frame, text="Reference Sequence:", font=controller.MEDIUMFONT).grid(
             row=0, column=0, sticky="w", padx=10, pady=10)
 
-        self.reference_var = ctk.StringVar(value="")
+        self.ref_sequence_var = ctk.StringVar(value="")
         self.ref_dropdown = ctk.CTkOptionMenu(ref_frame, values=["No sequences available"], 
-                                             variable=self.reference_var, width=200)
+                                             variable=self.ref_sequence_var, width=200)
         self.ref_dropdown.grid(row=0, column=1, sticky="w", padx=5, pady=10)
 
         refresh_btn = ctk.CTkButton(ref_frame, text="Refresh", command=self.refresh_reference_sequences, width=80)
         refresh_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
 
-    def create_fasta_selection(self):
+        # FASTA file selection frame
         fasta_frame = ctk.CTkFrame(self)
         fasta_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
         fasta_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(fasta_frame, text="FASTA File:", font=self.controller.MEDIUMFONT).grid(
+        ctk.CTkLabel(fasta_frame, text="FASTA File:", font=controller.MEDIUMFONT).grid(
             row=0, column=0, sticky="w", padx=10, pady=10)
 
         self.fasta_path_var = ctk.StringVar(value="")
@@ -2692,26 +2968,29 @@ class MutationExtractorPage(ctk.CTkFrame):
         browse_btn = ctk.CTkButton(fasta_frame, text="Browse...", command=self.browse_fasta_file, width=80)
         browse_btn.grid(row=0, column=2, padx=10, pady=10, sticky="w")
 
-    def create_preview_area(self):
-        preview_label = ctk.CTkLabel(self, text="FASTA File Preview:", font=self.controller.MEDIUMFONT)
+        # FASTA preview area (expandable)
+        preview_label = ctk.CTkLabel(self, text="FASTA File Preview:", font=controller.MEDIUMFONT)
         preview_label.grid(row=3, column=0, sticky="nw", padx=10, pady=(10, 5))
 
         self.fasta_preview = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=11))
         self.fasta_preview.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.fasta_preview.configure(state="disabled")
 
-    def create_action_buttons(self):
+        # Action buttons frame
         action_frame = ctk.CTkFrame(self)
         action_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=10)
 
         extract_btn = ctk.CTkButton(action_frame, text="Extract Mutations", 
-                                   command=self.extract_mutations, font=self.controller.MEDIUMFONT)
+                                   command=self.extract_mutations, font=controller.MEDIUMFONT)
         extract_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
 
-    def create_status_section(self):
+        # Status label
         self.status_label = ctk.CTkLabel(self, text="Select reference sequence and FASTA file to begin", 
-                                        font=self.controller.SMALLFONT, text_color="gray")
+                                        font=controller.SMALLFONT, text_color="gray")
         self.status_label.grid(row=5, column=0, sticky="w", padx=10, pady=5)
+
+        # Initialize
+        self.refresh_reference_sequences()
 
     def get_sequences_file_path(self):
         """Get the path to the wildtype_sequences.json file"""
@@ -2732,24 +3011,24 @@ class MutationExtractorPage(ctk.CTkFrame):
     def refresh_reference_sequences(self):
         """Refresh the dropdown with available reference sequences"""
         sequences_db = self.load_saved_sequences()
-        self.saved_sequences = sequences_db # Store for get_reference_protein_sequence
-        
         if sequences_db:
             sequence_names = list(sequences_db.keys())
             self.ref_dropdown.configure(values=sequence_names)
             if sequence_names:
-                self.reference_var.set(sequence_names[0])
+                self.ref_sequence_var.set(sequence_names[0])
                 self.status_label.configure(text=f"Loaded {len(sequence_names)} reference sequence(s)", text_color="green")
             else:
                 self.ref_dropdown.configure(values=["No sequences available"])
-                self.reference_var.set("")
+                self.ref_sequence_var.set("")
         else:
             self.ref_dropdown.configure(values=["No sequences available"])
-            self.reference_var.set("")
+            self.ref_sequence_var.set("")
             self.status_label.configure(text="No saved sequences found. Save sequences in Input tab first.", text_color="orange")
 
     def browse_fasta_file(self):
         """Browse and select FASTA file"""
+        from tkinter import filedialog
+        
         file_path = filedialog.askopenfilename(
             title="Select FASTA File",
             filetypes=[("FASTA files", "*.fasta *.fas *.fa"), ("All files", "*.*")]
@@ -2757,7 +3036,6 @@ class MutationExtractorPage(ctk.CTkFrame):
         
         if file_path:
             self.fasta_path_var.set(file_path)
-            self.fasta_file_path = file_path # Store for extract_mutations
             self.preview_fasta_file(file_path)
 
     def preview_fasta_file(self, file_path):
@@ -2784,48 +3062,55 @@ class MutationExtractorPage(ctk.CTkFrame):
             self.status_label.configure(text=f"Error reading FASTA file: {str(e)}", text_color="red")
 
     def parse_fasta(self, file_path):
-        """Parse FASTA file into a list of (header, sequence) tuples"""
+        """Parse FASTA file and return list of (header, sequence) tuples"""
         sequences = []
-        current_header = None
-        current_sequence = []
-        with open(file_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith('>'):
-                    if current_header:
-                        sequences.append((current_header, "".join(current_sequence)))
-                    current_header = line[1:].split(' ')[0] # Take first word as ID
-                    current_sequence = []
-                else:
-                    current_sequence.append(line)
-            if current_header:
-                sequences.append((current_header, "".join(current_sequence)))
+        try:
+            with open(file_path, 'r') as f:
+                current_header = None
+                current_sequence = []
+                
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('>'):
+                        # Save previous sequence if exists
+                        if current_header is not None:
+                            sequences.append((current_header, ''.join(current_sequence)))
+                        # Start new sequence
+                        current_header = line[1:]  # Remove '>'
+                        current_sequence = []
+                    elif line and current_header is not None:
+                        current_sequence.append(line.upper())
+                
+                # Don't forget the last sequence
+                if current_header is not None:
+                    sequences.append((current_header, ''.join(current_sequence)))
+                    
+        except Exception as e:
+            raise Exception(f"Error parsing FASTA file: {str(e)}")
+        
         return sequences
 
-    def is_dna_sequence(self, sequence):
-        """Check if a sequence appears to be DNA"""
-        return bool(re.match(r'^[ACGTNacgtn]+$', sequence))
-
     def get_reference_protein_sequence(self):
-        """Get the protein sequence for the selected reference"""
-        selected_ref = self.reference_var.get()
-        if selected_ref in self.saved_sequences:
-            
-            # Re-accessing the saved sequences to get the correct entry
-            sequences_db = self.load_saved_sequences()
-            if selected_ref in sequences_db:
-                dna_sequence = sequences_db[selected_ref]
-                flank_size = 30 # Defaulting to 30 as used in PrimerGenerator
-                if len(dna_sequence) > 2 * flank_size:
-                    coding_dna = dna_sequence[flank_size:-flank_size]
-                else:
-                    coding_dna = dna_sequence # If too short, use the whole thing.
+        """Get the reference protein sequence from selected DNA sequence"""
+        ref_name = self.ref_sequence_var.get()
+        if not ref_name or ref_name == "No sequences available":
+            raise Exception("Please select a reference sequence")
+        
+        sequences_db = self.load_saved_sequences()
+        if ref_name not in sequences_db:
+            raise Exception(f"Reference sequence '{ref_name}' not found")
+        
+        dna_sequence = sequences_db[ref_name]
+        
+        # Remove flanking regions (30bp from each end)
+        if len(dna_sequence) <= 60:
+            raise Exception("Reference DNA sequence is too short (must be >60bp with flanking regions)")
+        
+        coding_sequence = dna_sequence[30:-30]
+        protein_sequence = translate_dna_to_protein(coding_sequence)
+        
+        return protein_sequence
 
-                return translate_dna_to_protein(coding_dna)
-        return ""
-    
     def simple_pairwise_alignment(self, seq1, seq2):
         """
         Simple pairwise alignment using dynamic programming (Needleman-Wunsch-like)
@@ -2943,24 +3228,6 @@ class MutationExtractorPage(ctk.CTkFrame):
         except Exception as e:
             raise Exception(f"Alignment error: {str(e)}")
 
-    def display_mutations(self, mutations_found):
-        """Display found mutations in a message box"""
-        if not mutations_found:
-            messagebox.showinfo("Mutations Found", "No mutations found between the reference and FASTA sequences.")
-            return
-        
-        message = "Mutations found:\n\n"
-        for header, mut_list in mutations_found:
-            message += f"Sequence '{header}':\n"
-            if mut_list:
-                message += ", ".join(mut_list) + "\n"
-            else:
-                message += "No mutations detected.\n"
-            message += "\n"
-        
-        messagebox.showinfo("Mutations Found", message)
-        self.status_label.configure(text=f"Extracted mutations for {len(mutations_found)} sequence(s)", text_color="green")
-
     def extract_mutations(self):
         """Main function to extract mutations from FASTA sequences using alignment"""
         try:
@@ -3026,10 +3293,8 @@ class MutationExtractorPage(ctk.CTkFrame):
             
             # Show alignment summary for successful extractions
             if alignment_info and not alignment_errors:
-                summary_msg = f"Alignment Summary ({len(alignment_info)} sequences):\n\n" + "\n".join(alignment_info[:10])
-                if len(alignment_info) > 10:
-                    summary_msg += f"\n\n... and {len(alignment_info) - 10} more sequences"
-                messagebox.showinfo("Alignment Summary", summary_msg)
+                summary_msg = f"Extracted Sequences ({len(alignment_info)} sequences):\n"
+                messagebox.showinfo("Extracted Sequences", summary_msg)
             
             # Transfer mutations to Input tab
             if mutation_lines:
