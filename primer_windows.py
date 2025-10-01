@@ -1,6 +1,7 @@
 import customtkinter as ctk
 from customtkinter import DrawEngine
 DrawEngine.preferred_drawing_method = "polygon_shapes"
+from customtkinter import CTkFont
 from tkinter import simpledialog, filedialog, messagebox
 from pathlib import Path
 import json
@@ -73,7 +74,6 @@ def mutation_position(mutation):
     matches = re.findall(r'\d+', mutation)
     return int(matches[0]) if matches else 0
 
-
 class ScrollableFrameWithWheel(ctk.CTkScrollableFrame):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -99,6 +99,40 @@ class ScrollableFrameWithWheel(ctk.CTkScrollableFrame):
             self.unbind_all("<Button-5>"),
         ])
 
+class ConfigManager:
+    """Manage application configuration persistence"""
+    
+    def __init__(self, config_file="mutagenesis_config.json"):
+        self.config_file = Path.home() / ".mutagenesis" / config_file
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        self.config = self.load_config()
+    
+    def load_config(self):
+        """Load configuration from file"""
+        if self.config_file.exists():
+            try:
+                with open(self.config_file, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, Exception):
+                return {}
+        return {}
+    
+    def save_config(self):
+        """Save configuration to file"""
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(self.config, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save config: {e}")
+    
+    def get(self, key, default=None):
+        """Get configuration value"""
+        return self.config.get(key, default)
+    
+    def set(self, key, value):
+        """Set configuration value"""
+        self.config[key] = value
+        self.save_config()
 
 class PrimerGenerator:
     """Site-directed mutagenesis primer generator with improved 3'-extension handling."""
@@ -1231,6 +1265,7 @@ class MutagenesisApp(ctk.CTk):
         self.title("Site-Directed Mutagenesis Primer Designer")
         self.geometry("1050x500")
         self.minsize(1200, 700)
+        self.config_manager = ConfigManager()
         
         # Configure main window grid
         self.grid_columnconfigure(0, weight=0, minsize=200)
@@ -1241,7 +1276,12 @@ class MutagenesisApp(ctk.CTk):
         self.MEDIUMFONT = ctk.CTkFont(family="Verdana", size=12)
         self.SMALLFONT = ctk.CTkFont(family="Verdana", size=10)
 
-        self.output_dir = ctk.StringVar(value=str(Path.cwd() / "Mutagenesis"))
+        # Load last used output directory or use default
+        last_output_dir = self.config_manager.get('last_output_dir', str(Path.cwd() / "Mutagenesis"))
+        self.output_dir = ctk.StringVar(value=last_output_dir)
+        
+        # Trace changes to output_dir to save them
+        self.output_dir.trace_add('write', lambda *args: self.save_output_dir())
 
         # Left navigation frame
         nav_frame = ctk.CTkFrame(self)
@@ -1316,6 +1356,9 @@ class MutagenesisApp(ctk.CTk):
         with open(path, "w") as f:
             json.dump(databank, f, indent=2)
 
+    def save_output_dir(self):
+        """Save output directory when it changes"""
+        self.config_manager.set('last_output_dir', self.output_dir.get())
 
 class InputPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -1449,8 +1492,9 @@ class InputPage(ctk.CTkFrame):
         undo_btn.grid(row=0, column=1, padx=10, pady=10, sticky="w")
 
     def create_status_section(self):
+        self.status_font = CTkFont(family="Verdana", size=14)
         self.status_label = ctk.CTkLabel(self, text="Ready to run workflow", 
-                                        font=self.controller.SMALLFONT, text_color="gray")
+                                        font=self.status_font, text_color="gray")
         self.status_label.grid(row=7, column=0, columnspan=3, sticky="w", padx=10,
                                pady=(0, 10))
 
@@ -1669,6 +1713,10 @@ class InputPage(ctk.CTkFrame):
 
     def run_workflow(self):
         self.status_label.configure(text="Running workflow...", text_color="blue")
+
+        # Add validation early here
+        if not self.validate_inputs():
+            return
         
         seq = self.get_dna_sequence()
         variants_raw = self.var_text.get("1.0", "end").strip().split('\n')
@@ -1759,6 +1807,79 @@ class InputPage(ctk.CTkFrame):
                 self.status_label.configure(text="No changes to undo", text_color="orange")
         except Exception as e:
             self.status_label.configure(text=f"Undo failed: {str(e)}", text_color="red")
+
+    def validate_inputs(self):
+        dna_seq = self.get_dna_sequence()
+        mutations_raw = self.var_text.get("1.0", "end").strip()
+        mutations_lines = [line.strip() for line in mutations_raw.splitlines() if line.strip()]
+        mutations = []
+        for line in mutations_lines:
+            muts = [m.strip() for m in line.split(',') if m.strip()]
+            mutations.append(muts)
+
+        # DNA Sequence checks (same as before)...
+        if not dna_seq:
+            messagebox.showerror("Input Error", "DNA sequence is empty. Please enter a valid sequence.")
+            return False
+        if not re.fullmatch(r"[ATGC]+", dna_seq):
+            messagebox.showerror("Input Error", "DNA sequence must only contain characters: A, T, G, C.")
+            return False
+        if len(dna_seq) % 3 != 0:
+            messagebox.showerror("Input Error", "DNA sequence length must be divisible by 3.")
+            return False
+        if len(dna_seq) < 66:
+            messagebox.showerror("Input Error", "DNA sequence is too short for required flanking regions (minimum 66 bases).")
+            return False
+        if dna_seq[30:33] != "ATG":
+            messagebox.showerror("Input Error", f"Expected start codon ATG at bases 31-33, found '{dna_seq[30:33]}'.")
+            return False
+        stop_codon = dna_seq[-33:-30]
+        if stop_codon not in {"TAA", "TAG", "TGA"}:
+            messagebox.showerror("Input Error", f"Expected stop codon TAA, TAG or TGA before last 30 bases, found '{stop_codon}'.")
+            return False
+
+        # Mutation validations per variant
+        if not mutations:
+            messagebox.showerror("Input Error", "No mutations entered. Please enter at least one mutation.")
+            return False
+
+        mutation_pattern = re.compile(r"^[ACDEFGHIKLMNPQRSTVWY]\d+[ACDEFGHIKLMNPQRSTVWY]$")
+
+        for idx, variant in enumerate(mutations):
+            seen_in_variant = set()
+            for mut in variant:
+                if not mutation_pattern.match(mut):
+                    messagebox.showerror("Input Error", f"Invalid mutation format: '{mut}' in line {idx + 1}. Expected format e.g. K49R.")
+                    return False
+                if mut in seen_in_variant:
+                    messagebox.showerror("Input Error", f"Duplicate mutation '{mut}' found in variant line {idx + 1}.")
+                    return False
+                seen_in_variant.add(mut)
+
+        # If all validations pass
+        self.status_label.configure(text="Validation successful.", text_color="green")
+        return True
+    
+    def on_output_dir_changed(self, *args):
+        """Save output directory when it changes"""
+        self.config_manager.set('last_output_dir', self.output_dir.get())
+
+    def select_output_dir(self):
+        # Get current directory (will be the last used one)
+        current_dir = self.controller.output_dir.get()
+        
+        new_dir = filedialog.askdirectory(
+            title="Select Output Directory", 
+            initialdir=current_dir
+        )
+        
+        if new_dir:
+            self.controller.output_dir.set(new_dir)
+            # The trace callback will automatically save it
+            self.status_label.configure(
+                text=f"Output directory changed to: {new_dir}", 
+                text_color="green"
+            )
 
 
 class WildtypeProteinPage(ctk.CTkFrame, BaseProteinPage):
