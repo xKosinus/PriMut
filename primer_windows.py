@@ -1146,7 +1146,7 @@ class MutagenesisProtocol:
                 
                 protocol_files = [
                     protocols_dir / "mutagenesis_protocol.pdf",
-                    protocols_files / "protocol_data.json",
+                    protocols_dir / "protocol_data.json",
                     protocols_dir / "selected_variant_labels.pdf"
                 ]
                 
