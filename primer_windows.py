@@ -900,13 +900,13 @@ class MutagenesisProtocol:
             return
 
         elements.append(Paragraph("<b>Final Variants Overview</b>", styles['Heading2']))
-        final_table_data = [['Input Label', 'Final Variant', 'Mutations']]
+        final_table_data = [['Final Variant', 'Mutations']]
         for label in sorted(variant_to_label_map, key=self.extract_variant_number):
             sorted_mutations = sorted(variant_to_label_map[label], key=mutation_position)
             mut_paragraph = Paragraph(', '.join(sorted_mutations), cell_style)
-            final_table_data.append([label, variant_to_final_variant[label], mut_paragraph])
+            final_table_data.append([variant_to_final_variant[label], mut_paragraph])
         
-        table = Table(final_table_data, colWidths=[100, 100, 260], repeatRows=1)
+        table = Table(final_table_data, colWidths=[150, 310], repeatRows=1)
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
@@ -998,10 +998,19 @@ class MutagenesisProtocol:
         used_variants = {}
         existing_input_variants = {}
 
+        existing_ids = [int(v_id[-2:]) for v_id in variant_databank if v_id.startswith(self.variant_prefix)]
+        next_id_num = max(existing_ids, default=0) + 1
+        for muts, name in existing_variants.items():
+            mutation_str = ','.join(sorted(muts, key=mutation_position))
+            if mutation_str not in variant_databank.values():
+                new_id = f"{self.variant_prefix}{next_id_num:02d}"
+                variant_databank[new_id] = mutation_str
+                next_id_num += 1
+
         for idx, target_mutations in enumerate(variants):
             target = tuple(target_mutations)
             variant_key_str = self.variant_key(target)
-            variant_label = f"variant {idx+1}"
+            variant_label = f"{self.variant_prefix}{next_id_num:02d}"
 
             if variant_key_str in variant_databank.values():
                 if not self.list_existing_as_steps:
@@ -1062,12 +1071,14 @@ class MutagenesisProtocol:
 
                 if test_sorted not in existing_variants:
                     mutation_count = len(test_sorted)
-                    new_name = f"{variant_label}.{mutation_count}"
+                    new_name = f"{self.variant_prefix}{next_id_num:02d}"
                     existing_variants[test_sorted] = new_name
                     used_variants[test_sorted] = new_name
                     protocol_by_round[mutation_count].append([new_name, base_name, ', '.join(batch_muts)])
                     base_name = new_name
                     current_mutations = test_mutations
+                    variant_databank[new_name] = ','.join(test_sorted)
+                    next_id_num += 1
 
                 for gid in batch_ids:
                     needed_group_ids.remove(gid)
@@ -1087,15 +1098,6 @@ class MutagenesisProtocol:
             protocol_by_round, final_variants, existing_input_variants,
             variant_to_label_map, variant_to_final_variant, used_variants
         )
-
-        existing_ids = [int(v_id[-2:]) for v_id in variant_databank if v_id.startswith(self.variant_prefix)]
-        next_id_num = max(existing_ids, default=0) + 1
-        for muts, name in existing_variants.items():
-            mutation_str = ','.join(sorted(muts, key=mutation_position))
-            if mutation_str not in variant_databank.values():
-                new_id = f"{self.variant_prefix}{next_id_num:02d}"
-                variant_databank[new_id] = mutation_str
-                next_id_num += 1
 
         databank_file = self.output_dir / "variant_databank.json"
         if databank_file.exists():
