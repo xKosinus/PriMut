@@ -1,5 +1,8 @@
 # Installation
-To create the .exe file use PyInstaller:
+Download the ZIP file here:
+[Download primut_windows.zip](https://drive.google.com/drive/u/0/folders/1jN__IAV8oxhWepiKXnSJsMdjQT2QBw2A)
+
+Or to create the .exe file yourself use PyInstaller:
 ```
 pyinstaller primer_windows.py --onefile --windowed --icon=primut.ico --hidden-import=primer3
 ```
