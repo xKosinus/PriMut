@@ -1,6 +1,6 @@
 # Installation
 Download the ZIP file here:
-[Download primut_windows.zip](https://drive.google.com/drive/u/0/folders/1jN__IAV8oxhWepiKXnSJsMdjQT2QBw2A)
+[Download primut_windows.zip](https://drive.google.com/uc?export=download&id=1jN__IAV8oxhWepiKXnSJsMdjQT2QBw2A)
 
 Or to create the .exe file yourself use PyInstaller:
 ```
