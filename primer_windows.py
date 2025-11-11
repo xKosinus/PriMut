@@ -2355,7 +2355,8 @@ class DatabankPage(ctk.CTkFrame):
             ("Print Labels", self.print_selected_labels, 0),
             ("Refresh", self.refresh_variants, 1),
             ("View Proteins", lambda: self.controller.show_frame(VariantProteinPage), 2),
-            ("Add Variants", self.add_variants_window, 3)
+            ("Add Variants", self.add_variants_window, 3),
+            ("Edit Variants", self.open_variant_editor, 4)
         ]
         
         # Create first row
@@ -2578,6 +2579,10 @@ class DatabankPage(ctk.CTkFrame):
         """Open window for adding new variants to the databank"""
         output_dir = self.controller.output_dir.get()
         add_window = AddVariantsWindow(self, output_dir, self.controller)
+
+    def open_variant_editor(self):
+            """Open the variant editor window"""
+            editor_window = VariantEditorWindow(self, self.controller)
 
     def print_selected_labels(self):
         """Print labels for selected variants"""
@@ -2804,6 +2809,395 @@ class AddVariantsWindow:
         except Exception as e:
             messagebox.showerror("Error", f"Error adding variants: {str(e)}")
             self.status_label.configure(text=f"Error: {str(e)}")
+
+class VariantEditorWindow:
+    """Window for editing variant mutations while keeping labels unchanged"""
+    def __init__(self, parent, controller):
+        self.parent = parent
+        self.controller = controller
+        self.original_databank = {}
+        self.modified_variants = {}
+        
+        # Create window
+        self.window = ctk.CTkToplevel(parent)
+        self.window.title("Edit Variant Mutations")
+        self.window.geometry("1100x600")
+        self.window.transient(parent)
+
+        # Configure grid
+        self.window.grid_columnconfigure(0, weight=1)
+        self.window.grid_columnconfigure(1, weight=1)
+        self.window.grid_rowconfigure(1, weight=1)
+
+        # Track entry widgets and search variables
+        self.variant_entries = {}
+        self.search_vars = []
+        self.search_fields = []
+        self.all_variants = {}
+        self.filtered_variants = {}
+
+        # Setup UI first
+        self.setup_ui()
+        
+        # Then load variants
+        self.load_variants()
+        
+        # Force update to ensure display
+        self.window.update_idletasks()
+        
+        # Grab set after everything is ready
+        self.window.after(100, self.window.grab_set)
+
+    def setup_ui(self):
+        # Title
+        title_label = ctk.CTkLabel(self.window, 
+                                  text="Edit Variant Mutations",
+                                  font=self.controller.LARGEFONT)
+        title_label.grid(row=0, column=0, columnspan=2, pady=20, padx=20, sticky="ew")
+
+        # Left side - Variant list with editable mutations
+        self.create_variant_list()
+        
+        # Right side - Search and filter
+        self.create_search_section()
+        
+        # Bottom buttons
+        self.create_action_buttons()
+
+    def create_variant_list(self):
+        variant_frame = ctk.CTkFrame(self.window)
+        variant_frame.grid(row=1, column=0, sticky="nsew", padx=(20, 10), pady=10)
+        variant_frame.grid_columnconfigure(0, weight=1)
+        variant_frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(variant_frame, text="Variants (Label: Mutations)", 
+                    font=self.controller.MEDIUMFONT).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 5))
+
+        # Scrollable frame for variants
+        self.variant_scroll = ScrollableFrameWithWheel(variant_frame)
+        self.variant_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        self.variant_scroll.grid_columnconfigure(0, weight=0)  # Label column
+        self.variant_scroll.grid_columnconfigure(1, weight=1)  # Entry column
+
+    def create_search_section(self):
+        search_frame = ctk.CTkFrame(self.window)
+        search_frame.grid(row=1, column=1, sticky="nsew", padx=(10, 20), pady=10)
+        search_frame.grid_columnconfigure(0, weight=1)
+        search_frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(search_frame, text="Search & Filter:", 
+                    font=self.controller.MEDIUMFONT).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 5))
+
+        # Scrollable frame for search fields
+        self.search_scroll = ScrollableFrameWithWheel(search_frame)
+        self.search_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        self.search_scroll.grid_columnconfigure(0, weight=1)
+
+        # Results label - CREATE THIS FIRST before search options
+        self.results_label = ctk.CTkLabel(search_frame, text="", text_color="gray")
+        self.results_label.grid(row=2, column=0, sticky="w", padx=10, pady=5)
+
+        # Search options
+        self.create_search_options()
+        
+        # Initial search field (this will trigger filter_variants which needs results_label)
+        self.add_search_field(is_first=True)
+
+    def create_search_options(self):
+        options_frame = ctk.CTkFrame(self.search_scroll)
+        options_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        options_frame.grid_columnconfigure(4, weight=1)
+
+        # Logic controls
+        ctk.CTkLabel(options_frame, text="Logic:", font=self.controller.SMALLFONT).grid(
+            row=0, column=0, padx=5, pady=5, sticky="w")
+
+        self.search_logic_var = ctk.StringVar(value="AND")
+        logic_menu = ctk.CTkOptionMenu(options_frame, values=["AND", "OR"], 
+                                      variable=self.search_logic_var,
+                                      command=self.on_search_change, width=70)
+        logic_menu.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+
+        self.add_btn = ctk.CTkButton(options_frame, text="+", 
+                                    command=self.add_search_field, width=30, height=30)
+        self.add_btn.grid(row=0, column=2, padx=2, pady=5, sticky="w")
+
+        self.remove_btn = ctk.CTkButton(options_frame, text="−", 
+                                       command=self.remove_search_field,
+                                       width=30, height=30, state="disabled")
+        self.remove_btn.grid(row=0, column=3, padx=2, pady=5, sticky="w")
+
+        clear_all_btn = ctk.CTkButton(options_frame, text="Clear All", 
+                                     command=self.clear_all_search, width=80)
+        clear_all_btn.grid(row=0, column=4, padx=10, pady=5, sticky="w")
+
+    def add_search_field(self, is_first=False):
+        field_num = len(self.search_fields)
+        search_var = ctk.StringVar()
+        search_var.trace("w", self.on_search_change)
+        self.search_vars.append(search_var)
+        
+        field_frame = ctk.CTkFrame(self.search_scroll)
+        field_frame.grid(row=field_num + 1, column=0, sticky="ew", padx=5, pady=2)
+        field_frame.grid_columnconfigure(1, weight=1)
+        
+        label_text = "Search:" if is_first else "Search:"
+        label = ctk.CTkLabel(field_frame, text=label_text, font=self.controller.SMALLFONT)
+        label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        
+        search_entry = ctk.CTkEntry(field_frame, textvariable=search_var,
+                                   placeholder_text="Search by variant ID or mutations...")
+        search_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+        
+        field_data = {
+            'frame': field_frame, 
+            'label': label, 
+            'entry': search_entry, 
+            'var': search_var
+        }
+        self.search_fields.append(field_data)
+        
+        self.remove_btn.configure(state="normal" if len(self.search_fields) > 1 else "disabled")
+        self.filter_variants()
+
+    def remove_search_field(self):
+        if len(self.search_fields) <= 1:
+            return
+        
+        last_field = self.search_fields.pop()
+        self.search_vars.pop()
+        last_field['frame'].destroy()
+        
+        self.remove_btn.configure(state="normal" if len(self.search_fields) > 1 else "disabled")
+        self.filter_variants()
+
+    def clear_all_search(self):
+        for search_var in self.search_vars:
+            search_var.set("")
+
+    def on_search_change(self, *args):
+        self.filter_variants()
+
+    def get_active_search_terms(self):
+        return [var.get().lower().strip() for var in self.search_vars if var.get().strip()]
+
+    def filter_variants(self):
+        search_terms = self.get_active_search_terms()
+        
+        if not search_terms:
+            self.filtered_variants = self.all_variants.copy()
+        else:
+            self.filtered_variants = {}
+            logic = self.search_logic_var.get()
+            
+            for var_id, mutations in self.all_variants.items():
+                var_text = f"{var_id} {mutations}".lower()
+                
+                if logic == "AND":
+                    if all(term in var_text for term in search_terms):
+                        self.filtered_variants[var_id] = mutations
+                else:  # OR logic
+                    if any(term in var_text for term in search_terms):
+                        self.filtered_variants[var_id] = mutations
+        
+        # Debug: print filtering results
+        print(f"Filtered to {len(self.filtered_variants)} variants")
+        
+        self.update_variant_display()
+
+    def update_variant_display(self):
+        # Clear existing entries
+        for widget in self.variant_scroll.winfo_children():
+            widget.destroy()
+        self.variant_entries.clear()
+
+        # Update results label
+        total = len(self.all_variants)
+        filtered = len(self.filtered_variants)
+        terms = self.get_active_search_terms()
+        
+        if not terms:
+            self.results_label.configure(text=f"Showing all {total} variants")
+        else:
+            logic = self.search_logic_var.get()
+            terms_txt = f" {logic} ".join([f'"{x}"' for x in terms])
+            self.results_label.configure(text=f"Showing {filtered} of {total} matching [{terms_txt}]")
+
+        # Debug: Check if we have variants to display
+        print(f"Displaying {len(self.filtered_variants)} variants")
+        
+        # If no variants, show a message
+        if not self.filtered_variants:
+            no_data_label = ctk.CTkLabel(self.variant_scroll, 
+                                        text="No variants found in databank.\nPlease run the workflow first to create variants.",
+                                        font=self.controller.MEDIUMFONT,
+                                        text_color="orange")
+            no_data_label.grid(row=0, column=0, columnspan=2, pady=20, padx=20)
+            return
+
+        # Create rows for filtered variants
+        for i, (var_id, mutations) in enumerate(sorted(self.filtered_variants.items())):
+            # Label (read-only)
+            label = ctk.CTkLabel(self.variant_scroll, text=f"{var_id}:", 
+                               font=self.controller.MEDIUMFONT)
+            label.grid(row=i, column=0, sticky="w", padx=(10, 5), pady=5)
+
+            # Entry for mutations (editable)
+            entry_var = ctk.StringVar(value=mutations)
+            entry = ctk.CTkEntry(self.variant_scroll, textvariable=entry_var)
+            entry.grid(row=i, column=1, sticky="ew", padx=(5, 10), pady=5)
+            
+            # Track changes
+            entry_var.trace("w", lambda *args, vid=var_id: self.mark_modified(vid))
+            
+            self.variant_entries[var_id] = entry_var
+            
+        print(f"Created {len(self.variant_entries)} entry widgets")
+
+    def mark_modified(self, var_id):
+        """Track which variants have been modified"""
+        if var_id in self.variant_entries:
+            current_value = self.variant_entries[var_id].get()
+            original_value = self.original_databank.get(var_id, "")
+            
+            if current_value != original_value:
+                self.modified_variants[var_id] = current_value
+            elif var_id in self.modified_variants:
+                del self.modified_variants[var_id]
+
+    def create_action_buttons(self):
+        button_frame = ctk.CTkFrame(self.window)
+        button_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=20, pady=10)
+
+        # Status label
+        self.status_label = ctk.CTkLabel(button_frame, 
+                                        text="Modify mutations as needed, then click Save Changes", 
+                                        font=self.controller.MEDIUMFONT)
+        self.status_label.grid(row=0, column=0, columnspan=3, pady=10, padx=10)
+
+        # Action buttons
+        save_btn = ctk.CTkButton(button_frame, text="Save Changes", 
+                                command=self.save_changes, font=self.controller.MEDIUMFONT)
+        save_btn.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+
+        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=self.window.destroy)
+        cancel_btn.grid(row=1, column=1, padx=10, pady=10, sticky="w")
+
+        reset_btn = ctk.CTkButton(button_frame, text="Reset All Changes", 
+                                 command=self.reset_changes)
+        reset_btn.grid(row=1, column=2, padx=10, pady=10, sticky="w")
+
+    def load_variants(self):
+        """Load variants from databank"""
+        self.all_variants = self.controller.get_databank()
+        self.original_databank = copy.deepcopy(self.all_variants)
+        
+        # Debug: print what we loaded
+        print(f"Loaded {len(self.all_variants)} variants from databank")
+        
+        self.filter_variants()
+
+    def normalize_mutations(self, mutation_string):
+        """Clean up mutation string - remove spaces and ensure consistency"""
+        if not mutation_string or mutation_string == "(none)":
+            return "(none)"
+        
+        # Split by comma, strip spaces from each mutation, filter empty strings
+        mutations = [m.strip() for m in mutation_string.split(',') if m.strip()]
+        
+        # Join back without spaces after commas
+        return ','.join(mutations)
+
+    def validate_mutation_format(self, mutation_string):
+        """Validate mutation format"""
+        if mutation_string == "(none)":
+            return True, ""
+        
+        mutations = [m.strip() for m in mutation_string.split(',') if m.strip()]
+        
+        if not mutations:
+            return True, ""  # Empty is valid
+        
+        mutation_pattern = re.compile(r"^[ACDEFGHIKLMNPQRSTVWY]\d+[ACDEFGHIKLMNPQRSTVWY]$")
+        
+        for mut in mutations:
+            if not mutation_pattern.match(mut):
+                return False, f"Invalid mutation format: '{mut}'. Expected format: e.g., K49R"
+        
+        return True, ""
+
+    def reset_changes(self):
+        """Reset all changes to original values"""
+        for var_id, entry_var in self.variant_entries.items():
+            if var_id in self.original_databank:
+                entry_var.set(self.original_databank[var_id])
+        
+        self.modified_variants.clear()
+        self.status_label.configure(text="All changes reset to original values", text_color="orange")
+
+    def save_changes(self):
+        """Save modified variants to databank"""
+        if not self.modified_variants:
+            messagebox.showinfo("Info", "No changes to save")
+            return
+
+        # Validate and normalize all modified variants
+        normalized_variants = {}
+        validation_errors = []
+        
+        for var_id, mutation_string in self.modified_variants.items():
+            # Normalize (remove spaces)
+            normalized = self.normalize_mutations(mutation_string)
+            
+            # Validate format
+            is_valid, error_msg = self.validate_mutation_format(normalized)
+            if not is_valid:
+                validation_errors.append(f"{var_id}: {error_msg}")
+            else:
+                normalized_variants[var_id] = normalized
+
+        # Show validation errors if any
+        if validation_errors:
+            error_msg = "Validation errors found:\n\n" + "\n".join(validation_errors)
+            messagebox.showerror("Validation Error", error_msg)
+            return
+
+        # Confirm changes
+        change_summary = "\n".join([
+            f"{vid}:\n  Old: {self.original_databank.get(vid, '')}\n  New: {new_val}"
+            for vid, new_val in sorted(normalized_variants.items())
+        ])
+        
+        confirm = messagebox.askyesno(
+            "Confirm Changes",
+            f"Save changes to {len(normalized_variants)} variant(s)?\n\n{change_summary}"
+        )
+        
+        if not confirm:
+            return
+
+        try:
+            # Backup for undo
+            databank = self.controller.get_databank()
+            self.controller.undo_stack.append(copy.deepcopy(databank))
+
+            # Apply changes
+            for var_id, new_mutations in normalized_variants.items():
+                databank[var_id] = new_mutations
+
+            # Save to file
+            self.controller.save_databank(databank)
+            
+            # Refresh parent databank display
+            self.parent.refresh_variants()
+            
+            messagebox.showinfo("Success", f"Successfully updated {len(normalized_variants)} variant(s)")
+            self.window.destroy()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error saving changes: {str(e)}")
 
 
 class ProtocolResultsPage(ctk.CTkFrame):
