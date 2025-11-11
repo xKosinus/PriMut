@@ -1007,6 +1007,13 @@ class MutagenesisProtocol:
                 variant_databank[new_id] = mutation_str
                 next_id_num += 1
 
+        # If Skip Variant Databank is active, ignore existing variants during planning
+        if self.list_existing_as_steps:
+            planning_variants = {(): 'wildtype'}  # only start from wildtype
+        else:
+            planning_variants = dict(existing_variants)  # normal mode
+
+
         for idx, target_mutations in enumerate(variants):
             target = tuple(target_mutations)
             variant_key_str = self.variant_key(target)
@@ -1015,20 +1022,18 @@ class MutagenesisProtocol:
             if variant_key_str in variant_databank.values():
                 if not self.list_existing_as_steps:
                     # Just note it in the pre-existing list and skip real planning
-                    for muts, name in existing_variants.items():
+                    for muts, name in planning_variants.items():
                         if variant_key_str == self.variant_key(muts):
                             existing_input_variants[variant_label] = name
                             break
                     continue
                 else:
-                    # Force regenerate a full protocol path as if it's new
-                    for muts in list(existing_variants.keys()):
-                        if self.variant_key(muts) == variant_key_str:
-                            del existing_variants[muts]
+                    # Skip using databank variants — do nothing special
+                    pass
 
-            base_variant = self.get_base_variant(target, existing_variants)
+            base_variant = self.get_base_variant(target, planning_variants)
             current_mutations = list(base_variant)
-            base_name = existing_variants[base_variant]
+            base_name = planning_variants[base_variant]
 
             target_group_ids = []
             for mut in target:
@@ -1069,10 +1074,10 @@ class MutagenesisProtocol:
                 )
                 test_sorted = tuple(test_mutations)
 
-                if test_sorted not in existing_variants:
+                if test_sorted not in planning_variants:
                     mutation_count = len(test_sorted)
                     new_name = f"{self.variant_prefix}{next_id_num:02d}"
-                    existing_variants[test_sorted] = new_name
+                    planning_variants[test_sorted] = new_name
                     used_variants[test_sorted] = new_name
                     protocol_by_round[mutation_count].append([new_name, base_name, ', '.join(batch_muts)])
                     base_name = new_name
@@ -1087,6 +1092,13 @@ class MutagenesisProtocol:
             variant_to_label_map[variant_label] = target
             variant_to_final_variant[variant_label] = base_name
             used_variants[tuple(sorted(map(self.normalize_mut, target), key=mutation_position))] = base_name
+
+        # If skipping databank use, merge new variants into the existing databank
+        if self.list_existing_as_steps:
+            existing_variants.update({
+                muts: name for muts, name in planning_variants.items() if muts not in existing_variants
+            })
+
 
         self.generate_pdf(
             protocol_by_round, final_variants, str(self.pdf_path),
@@ -1110,13 +1122,27 @@ class MutagenesisProtocol:
         else:
             self.undo_stack.append({})
 
-        if not self.list_existing_as_steps:
-            with open(self.databank_file, "w") as f:
-                json.dump(variant_databank, f, indent=2)
+        if self.list_existing_as_steps:
+            # Load existing databank
+            if databank_file.exists():
+                with open(databank_file, "r") as f:
+                    try:
+                        existing_json = json.load(f)
+                    except json.JSONDecodeError:
+                        existing_json = {}
+            else:
+                existing_json = {}
 
-        # Now save new databank
-        with open(databank_file, 'w') as f:
-            json.dump(variant_databank, f, indent=2)
+            # Merge new variants
+            existing_json.update(variant_databank)
+
+            # Save merged databank
+            with open(databank_file, "w") as f:
+                json.dump(existing_json, f, indent=2)
+        else:
+            # Normal behavior
+            with open(databank_file, "w") as f:
+                json.dump(variant_databank, f, indent=2)
 
         print(f"PDF generated: {self.pdf_path}")
         print(f"Databank updated: {self.databank_file}")
