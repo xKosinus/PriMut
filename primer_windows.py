@@ -1542,7 +1542,7 @@ class InputPage(ctk.CTkFrame):
         file_path = self.get_sequences_file_path()
         if file_path.exists():
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, "r", encoding="latin-1") as f:
                     sequences = json.load(f)
                 return sequences
             except Exception as e:
