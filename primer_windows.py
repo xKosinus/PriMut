@@ -3394,7 +3394,7 @@ class PrimerPage(ctk.CTkFrame):
 
         try:
             # Read CSV
-            with open(path, newline="", encoding='latin-1') as csvfile:
+            with open(path, newline="", encoding='utf-8') as csvfile:
                 reader = csv.DictReader(csvfile)
                 primers = list(reader)
 
