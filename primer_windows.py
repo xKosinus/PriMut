@@ -3332,6 +3332,443 @@ class ProtocolResultsPage(ctk.CTkFrame):
         self.results_text.insert("end", f"\nTotal variants: {len(all_variants)}\n")
         self.results_text.configure(state="disabled")
 
+class PrimerEditorWindow:
+    """Window for editing individual primer sequences with +/- buttons"""
+    
+    def __init__(self, parent, controller, primer_data):
+        self.parent = parent
+        self.controller = controller
+        self.primer_data = copy.deepcopy(primer_data)  # Work with a copy
+        self.current_index = 0
+        self.modified = False
+        
+        # Create window
+        self.window = ctk.CTkToplevel(parent)
+        self.window.title("Primer Editor")
+        self.window.geometry("900x600")
+        self.window.transient(parent)
+        
+        # Configure grid
+        self.window.grid_columnconfigure(0, weight=1)
+        self.window.grid_rowconfigure(2, weight=1)
+        
+        # Get wildtype sequence for Tm calculation
+        self.wt_sequence = self.get_wildtype_sequence()
+        
+        self.setup_ui()
+        self.load_primer(0)
+        
+        # Grab focus after setup
+        self.window.after(100, self.window.grab_set)
+    
+    def get_wildtype_sequence(self):
+        """Get wildtype DNA sequence from input page"""
+        try:
+            input_page = self.controller.frames[InputPage]
+            return input_page.get_dna_sequence()
+        except:
+            return ""
+    
+    def find_primer_position_in_wt(self, primer_seq):
+        """Find where this primer sequence appears in the wildtype sequence"""
+        if not self.wt_sequence or not primer_seq:
+            return -1
+        
+        # Try forward strand
+        pos = self.wt_sequence.find(primer_seq)
+        if pos != -1:
+            return pos
+        
+        # Try finding a substring (primer might be modified)
+        # Check overlapping regions
+        for i in range(len(self.wt_sequence) - len(primer_seq) + 1):
+            matches = sum(1 for a, b in zip(self.wt_sequence[i:i+len(primer_seq)], primer_seq) if a == b)
+            if matches / len(primer_seq) > 0.8:  # 80% match
+                return i
+        
+        return -1
+    
+    def get_next_base_from_wt(self, current_seq, direction='3prime'):
+        """Get the next base from wildtype sequence"""
+        if not self.wt_sequence or not current_seq:
+            return None
+        
+        pos = self.find_primer_position_in_wt(current_seq)
+        if pos == -1:
+            return None
+        
+        if direction == '5prime':
+            # Add to 5' end - get base before current position
+            if pos > 0:
+                return self.wt_sequence[pos - 1]
+        else:  # 3prime
+            # Add to 3' end - get base after current position
+            end_pos = pos + len(current_seq)
+            if end_pos < len(self.wt_sequence):
+                return self.wt_sequence[end_pos]
+        
+        return None
+    
+    def calculate_tm(self, sequence):
+        """Calculate Tm for a sequence"""
+        if not sequence:
+            return 0.0
+        
+        # Try using primer3 if available
+        try:
+            import primer3
+            tm = primer3.calc_tm(sequence)
+            if tm > 0:
+                return round(tm, 2)
+        except:
+            pass
+        
+        # Fallback calculation
+        gc_count = sequence.count('G') + sequence.count('C')
+        at_count = sequence.count('A') + sequence.count('T')
+        length = len(sequence)
+        
+        if length < 14:
+            tm = at_count * 2 + gc_count * 4
+        else:
+            gc_percent = (gc_count / length) * 100 if length > 0 else 0
+            tm = 81.5 + 0.41 * gc_percent - (675 / length) + 16.6 * (-1.3)
+        
+        return round(max(0.0, tm), 2)
+    
+    def setup_ui(self):
+        # Title and navigation
+        header_frame = ctk.CTkFrame(self.window)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=20)
+        header_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(header_frame, text="Primer Editor", 
+                    font=self.controller.LARGEFONT).grid(row=0, column=0, columnspan=3, pady=10)
+        
+        # Navigation buttons
+        nav_frame = ctk.CTkFrame(header_frame)
+        nav_frame.grid(row=1, column=0, columnspan=3, pady=10)
+        
+        self.prev_btn = ctk.CTkButton(nav_frame, text="◄ Previous", 
+                                      command=self.prev_primer, width=100)
+        self.prev_btn.grid(row=0, column=0, padx=5)
+        
+        self.primer_label = ctk.CTkLabel(nav_frame, text="Primer 1 of X", 
+                                        font=self.controller.MEDIUMFONT)
+        self.primer_label.grid(row=0, column=1, padx=20)
+        
+        self.next_btn = ctk.CTkButton(nav_frame, text="Next ►", 
+                                      command=self.next_primer, width=100)
+        self.next_btn.grid(row=0, column=2, padx=5)
+        
+        # Primer info
+        info_frame = ctk.CTkFrame(self.window)
+        info_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
+        info_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(info_frame, text="Primer Name:", 
+                    font=self.controller.MEDIUMFONT).grid(row=0, column=0, sticky="w", padx=10, pady=5)
+        self.name_label = ctk.CTkLabel(info_frame, text="", 
+                                      font=self.controller.MEDIUMFONT, text_color="#4a90e2")
+        self.name_label.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+        
+        ctk.CTkLabel(info_frame, text="Current Tm:", 
+                    font=self.controller.MEDIUMFONT).grid(row=1, column=0, sticky="w", padx=10, pady=5)
+        self.tm_label = ctk.CTkLabel(info_frame, text="0.0 °C", 
+                                     font=self.controller.MEDIUMFONT, text_color="green")
+        self.tm_label.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        
+        ctk.CTkLabel(info_frame, text="Length:", 
+                    font=self.controller.MEDIUMFONT).grid(row=2, column=0, sticky="w", padx=10, pady=5)
+        self.length_label = ctk.CTkLabel(info_frame, text="0 bp", 
+                                        font=self.controller.MEDIUMFONT)
+        self.length_label.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        
+        # Sequence editor frame
+        editor_frame = ctk.CTkFrame(self.window)
+        editor_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=10)
+        editor_frame.grid_columnconfigure(1, weight=1)
+        editor_frame.grid_rowconfigure(0, weight=1)
+        
+        # Left controls (5' end)
+        left_frame = ctk.CTkFrame(editor_frame)
+        left_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
+        
+        ctk.CTkLabel(left_frame, text="5' End", font=self.controller.MEDIUMFONT).pack(pady=10)
+        
+        self.left_minus_btn = ctk.CTkButton(left_frame, text="− Remove", width=100, height=40,
+                                           font=ctk.CTkFont(size=14),
+                                           command=self.remove_left_base)
+        self.left_minus_btn.pack(pady=10)
+        
+        # Show next base that will be added
+        self.left_next_base_label = ctk.CTkLabel(left_frame, text="Next: ?", 
+                                                 font=ctk.CTkFont(size=16, weight="bold"),
+                                                 text_color="#4a90e2")
+        self.left_next_base_label.pack(pady=10)
+        
+        self.left_plus_btn = ctk.CTkButton(left_frame, text="+ Add", width=100, height=40,
+                                          font=ctk.CTkFont(size=14),
+                                          command=self.add_left_base)
+        self.left_plus_btn.pack(pady=10)
+        
+        # Sequence display (center)
+        seq_frame = ctk.CTkFrame(editor_frame)
+        seq_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+        seq_frame.grid_rowconfigure(1, weight=1)
+        seq_frame.grid_columnconfigure(0, weight=1)
+        
+        ctk.CTkLabel(seq_frame, text="Primer Sequence", 
+                    font=self.controller.MEDIUMFONT).grid(row=0, column=0, pady=10)
+        
+        self.sequence_text = ctk.CTkTextbox(seq_frame, font=ctk.CTkFont(family="Courier", size=14),
+                                           wrap="char")
+        self.sequence_text.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        
+        # Right controls (3' end)
+        right_frame = ctk.CTkFrame(editor_frame)
+        right_frame.grid(row=0, column=2, sticky="ns", padx=5, pady=5)
+        
+        ctk.CTkLabel(right_frame, text="3' End", font=self.controller.MEDIUMFONT).pack(pady=10)
+        
+        self.right_minus_btn = ctk.CTkButton(right_frame, text="− Remove", width=100, height=40,
+                                            font=ctk.CTkFont(size=14),
+                                            command=self.remove_right_base)
+        self.right_minus_btn.pack(pady=10)
+        
+        # Show next base that will be added
+        self.right_next_base_label = ctk.CTkLabel(right_frame, text="Next: ?", 
+                                                  font=ctk.CTkFont(size=16, weight="bold"),
+                                                  text_color="#4a90e2")
+        self.right_next_base_label.pack(pady=10)
+        
+        self.right_plus_btn = ctk.CTkButton(right_frame, text="+ Add", width=100, height=40,
+                                           font=ctk.CTkFont(size=14),
+                                           command=self.add_right_base)
+        self.right_plus_btn.pack(pady=10)
+        
+        # Action buttons
+        button_frame = ctk.CTkFrame(self.window)
+        button_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=10)
+        
+        self.status_label = ctk.CTkLabel(button_frame, text="Make changes and click Save", 
+                                        font=self.controller.MEDIUMFONT)
+        self.status_label.grid(row=0, column=0, columnspan=4, pady=10)
+        
+        reset_btn = ctk.CTkButton(button_frame, text="Reset Current", 
+                                 command=self.reset_current_primer)
+        reset_btn.grid(row=1, column=0, padx=10, pady=10)
+        
+        save_btn = ctk.CTkButton(button_frame, text="Save All Changes", 
+                                command=self.save_all_changes, fg_color="green")
+        save_btn.grid(row=1, column=1, padx=10, pady=10)
+        
+        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=self.window.destroy)
+        cancel_btn.grid(row=1, column=2, padx=10, pady=10)
+    
+    def load_primer(self, index):
+        """Load primer at given index"""
+        if 0 <= index < len(self.primer_data):
+            self.current_index = index
+            primer = self.primer_data[index]
+            
+            # Update labels
+            self.name_label.configure(text=primer.get("Primer Name", ""))
+            self.primer_label.configure(text=f"Primer {index + 1} of {len(self.primer_data)}")
+            
+            # Update sequence display
+            sequence = primer.get("Primer Sequence", "")
+            self.sequence_text.delete("1.0", "end")
+            
+            # Format sequence with line breaks every 60 bases
+            formatted = '\n'.join([sequence[i:i+60] for i in range(0, len(sequence), 60)])
+            self.sequence_text.insert("1.0", formatted)
+            
+            # Update Tm and length
+            self.update_primer_info()
+            
+            # Update next base labels
+            self.update_next_base_labels()
+            
+            # Update navigation buttons
+            self.prev_btn.configure(state="normal" if index > 0 else "disabled")
+            self.next_btn.configure(state="normal" if index < len(self.primer_data) - 1 else "disabled")
+    
+    def update_next_base_labels(self):
+        """Update the labels showing which bases will be added next"""
+        current_seq = self.get_current_sequence()
+        
+        # 5' end (left)
+        next_base_5 = self.get_next_base_from_wt(current_seq, '5prime')
+        if next_base_5:
+            self.left_next_base_label.configure(text=f"Next: {next_base_5}")
+            self.left_plus_btn.configure(state="normal")
+        else:
+            self.left_next_base_label.configure(text="Next: N/A")
+            self.left_plus_btn.configure(state="disabled")
+        
+        # 3' end (right)
+        next_base_3 = self.get_next_base_from_wt(current_seq, '3prime')
+        if next_base_3:
+            self.right_next_base_label.configure(text=f"Next: {next_base_3}")
+            self.right_plus_btn.configure(state="normal")
+        else:
+            self.right_next_base_label.configure(text="Next: N/A")
+            self.right_plus_btn.configure(state="disabled")
+    
+    def update_primer_info(self):
+        """Update Tm and length display"""
+        sequence = self.get_current_sequence()
+        length = len(sequence)
+        tm = self.calculate_tm(sequence)
+        
+        self.length_label.configure(text=f"{length} bp")
+        self.tm_label.configure(text=f"{tm} °C")
+        
+        # Update stored data
+        self.primer_data[self.current_index]["Primer Sequence"] = sequence
+        self.primer_data[self.current_index]["Length"] = str(length)
+        self.primer_data[self.current_index]["Tm (°C)"] = str(tm)
+        
+        # Update next base labels
+        self.update_next_base_labels()
+    
+    def get_current_sequence(self):
+        """Get current sequence from text widget"""
+        text = self.sequence_text.get("1.0", "end-1c")
+        # Remove whitespace and newlines
+        return ''.join(text.split())
+    
+    def add_left_base(self):
+        """Add a base to the 5' end from wildtype sequence"""
+        current_seq = self.get_current_sequence()
+        next_base = self.get_next_base_from_wt(current_seq, '5prime')
+        
+        if not next_base:
+            self.status_label.configure(text="Cannot determine next base from wildtype sequence", text_color="red")
+            return
+        
+        new_seq = next_base + current_seq
+        
+        self.sequence_text.delete("1.0", "end")
+        formatted = '\n'.join([new_seq[i:i+60] for i in range(0, len(new_seq), 60)])
+        self.sequence_text.insert("1.0", formatted)
+        
+        self.update_primer_info()
+        self.modified = True
+        self.status_label.configure(text=f"Added {next_base} to 5' end", text_color="green")
+    
+    def remove_left_base(self):
+        """Remove a base from the 5' end"""
+        current_seq = self.get_current_sequence()
+        if len(current_seq) > 1:
+            removed = current_seq[0]
+            new_seq = current_seq[1:]
+            
+            self.sequence_text.delete("1.0", "end")
+            formatted = '\n'.join([new_seq[i:i+60] for i in range(0, len(new_seq), 60)])
+            self.sequence_text.insert("1.0", formatted)
+            
+            self.update_primer_info()
+            self.modified = True
+            self.status_label.configure(text=f"Removed {removed} from 5' end", text_color="orange")
+        else:
+            self.status_label.configure(text="Cannot remove - sequence too short!", text_color="red")
+    
+    def add_right_base(self):
+        """Add a base to the 3' end from wildtype sequence"""
+        current_seq = self.get_current_sequence()
+        next_base = self.get_next_base_from_wt(current_seq, '3prime')
+        
+        if not next_base:
+            self.status_label.configure(text="Cannot determine next base from wildtype sequence", text_color="red")
+            return
+        
+        new_seq = current_seq + next_base
+        
+        self.sequence_text.delete("1.0", "end")
+        formatted = '\n'.join([new_seq[i:i+60] for i in range(0, len(new_seq), 60)])
+        self.sequence_text.insert("1.0", formatted)
+        
+        self.update_primer_info()
+        self.modified = True
+        self.status_label.configure(text=f"Added {next_base} to 3' end", text_color="green")
+    
+    def remove_right_base(self):
+        """Remove a base from the 3' end"""
+        current_seq = self.get_current_sequence()
+        if len(current_seq) > 1:
+            removed = current_seq[-1]
+            new_seq = current_seq[:-1]
+            
+            self.sequence_text.delete("1.0", "end")
+            formatted = '\n'.join([new_seq[i:i+60] for i in range(0, len(new_seq), 60)])
+            self.sequence_text.insert("1.0", formatted)
+            
+            self.update_primer_info()
+            self.modified = True
+            self.status_label.configure(text=f"Removed {removed} from 3' end", text_color="orange")
+        else:
+            self.status_label.configure(text="Cannot remove - sequence too short!", text_color="red")
+    
+    def reset_current_primer(self):
+        """Reset current primer to original sequence"""
+        # Get original from parent
+        original_data = self.parent.primer_data[self.current_index]
+        self.primer_data[self.current_index] = copy.deepcopy(original_data)
+        self.load_primer(self.current_index)
+        self.status_label.configure(text="Primer reset to original", text_color="blue")
+    
+    def prev_primer(self):
+        """Navigate to previous primer"""
+        if self.current_index > 0:
+            self.load_primer(self.current_index - 1)
+    
+    def next_primer(self):
+        """Navigate to next primer"""
+        if self.current_index < len(self.primer_data) - 1:
+            self.load_primer(self.current_index + 1)
+    
+    def save_all_changes(self):
+        """Save all modified primers back to CSV"""
+        if not self.modified:
+            messagebox.showinfo("No Changes", "No modifications were made.")
+            return
+        
+        confirm = messagebox.askyesno("Confirm Save", 
+                                      "Save all changes to primer_list.csv?\n\nThis will overwrite the existing file.")
+        if not confirm:
+            return
+        
+        try:
+            # Save to CSV
+            output_dir = Path(self.controller.output_dir.get())
+            csv_path = output_dir / "primer_list.csv"
+            
+            # Backup original
+            backup_path = output_dir / "primer_list.csv.backup"
+            if csv_path.exists():
+                import shutil
+                shutil.copy(csv_path, backup_path)
+            
+            # Write updated data
+            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                fieldnames = ["Primer Name", "Primer Sequence", "Length", "Tm (°C)", 
+                            "Overlap Length", "Overlap Tm", "Mutations"]
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(self.primer_data)
+            
+            # Update parent's data
+            self.parent.primer_data = copy.deepcopy(self.primer_data)
+            self.parent.load_primers()
+            
+            messagebox.showinfo("Success", f"Primers saved successfully!\n\nBackup created: {backup_path.name}")
+            self.window.destroy()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save primers:\n{str(e)}")
+
 
 class PrimerPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -3346,8 +3783,9 @@ class PrimerPage(ctk.CTkFrame):
         self.create_controls()
         self.create_table_area()
 
-        # Keep references to rows
+        # Keep references to rows and primer data
         self.table_labels = []
+        self.primer_data = []
 
     def create_header(self):
         header_frame = ctk.CTkFrame(self)
@@ -3373,6 +3811,9 @@ class PrimerPage(ctk.CTkFrame):
 
         refresh_btn = ctk.CTkButton(controls_frame, text="Refresh", command=self.load_primers)
         refresh_btn.grid(row=0, column=1, sticky="w", padx=10, pady=10)
+
+        edit_btn = ctk.CTkButton(controls_frame, text="Edit Primers", command=self.open_primer_editor)
+        edit_btn.grid(row=0, column=2, sticky="w", padx=10, pady=10)
 
     def create_table_area(self):
         self.scroll_frame = ScrollableFrameWithWheel(self)
@@ -3402,6 +3843,9 @@ class PrimerPage(ctk.CTkFrame):
                 lbl = ctk.CTkLabel(self.scroll_frame, text="No primers found in file.", text_color="orange")
                 lbl.pack(pady=20)
                 return
+            
+            # Store primer data for editing
+            self.primer_data = primers  # Add this line
 
             # Configure grid columns for proper spacing
             headers = ["Primer Name", "Primer Sequence", "Tm (°C)", "Overlap Tm (°C)"]
@@ -3451,6 +3895,14 @@ class PrimerPage(ctk.CTkFrame):
         text = "\n".join(lines)
         self.clipboard_clear()
         self.clipboard_append(text)
+
+    def open_primer_editor(self):
+        """Open the primer editor window"""
+        if not self.primer_data:
+            messagebox.showwarning("No Primers", "Please load primers first by clicking Refresh.")
+            return
+        
+        PrimerEditorWindow(self, self.controller, self.primer_data)
 
 
 class MutationExtractorPage(ctk.CTkFrame):
