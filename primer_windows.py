@@ -500,7 +500,7 @@ class PrimerGenerator:
             f.write("=" * 120 + "\n\n")
 
             header = (f"{'Primer Name':<20}{'Primer Sequence':<60}{'Len':>6}"
-                      f"{'Tm (°C)':>9}{'OverlapLen':>11}{'OverlapTm':>10}{'Notes':>30}\n")
+                      f"{'Tm':>9}{'OverlapLen':>11}{'OverlapTm':>10}{'Notes':>30}\n")
             f.write(header)
             f.write("-" * 120 + "\n")
 
@@ -534,7 +534,7 @@ class PrimerGenerator:
         with open(filepath_csv, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
-                "Primer Name", "Primer Sequence", "Length", "Tm (°C)",
+                "Primer Name", "Primer Sequence", "Length", "Tm",
                 "Overlap Length", "Overlap Tm", "Mutations"
             ])
 
@@ -3628,7 +3628,7 @@ class PrimerEditorWindow:
         # Update stored data
         self.primer_data[self.current_index]["Primer Sequence"] = sequence
         self.primer_data[self.current_index]["Length"] = str(length)
-        self.primer_data[self.current_index]["Tm (°C)"] = str(tm)
+        self.primer_data[self.current_index]["Tm"] = str(tm)
         
         # Update next base labels
         self.update_next_base_labels()
@@ -3753,7 +3753,7 @@ class PrimerEditorWindow:
             
             # Write updated data
             with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-                fieldnames = ["Primer Name", "Primer Sequence", "Length", "Tm (°C)", 
+                fieldnames = ["Primer Name", "Primer Sequence", "Length", "Tm", 
                             "Overlap Length", "Overlap Tm", "Mutations"]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
