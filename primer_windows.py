@@ -3354,12 +3354,22 @@ class PrimerEditorWindow:
         
         # Get wildtype sequence for Tm calculation
         self.wt_sequence = self.get_wildtype_sequence()
+        self.wt_sequence_rc = self.reverse_complement(self.wt_sequence)
         
         self.setup_ui()
         self.load_primer(0)
         
         # Grab focus after setup
         self.window.after(100, self.window.grab_set)
+    
+    def reverse_complement(self, sequence):
+        """Return the reverse complement of a DNA sequence"""
+        if not sequence:
+            return ""
+        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G',
+                     'a': 't', 't': 'a', 'g': 'c', 'c': 'g'}
+        rc = ''.join([complement.get(base, base) for base in sequence[::-1]])
+        return rc.upper()
     
     def get_wildtype_sequence(self):
         """Get wildtype DNA sequence from input page"""
@@ -3369,28 +3379,56 @@ class PrimerEditorWindow:
         except:
             return ""
     
+    def is_reverse_primer(self, primer_name):
+        """Determine if primer is a reverse primer based on name"""
+        name_lower = primer_name.lower()
+        # Check for common reverse primer naming patterns
+        return ('_rev' in name_lower or 
+                '_reverse' in name_lower or 
+                name_lower.endswith('_r') or
+                name_lower.endswith('rev'))
+    
+    def get_reference_sequence(self):
+        """Get the appropriate reference sequence (forward or reverse complement)"""
+        current_primer = self.primer_data[self.current_index]
+        primer_name = current_primer.get("Primer Name", "")
+        
+        if self.is_reverse_primer(primer_name):
+            return self.wt_sequence_rc
+        else:
+            return self.wt_sequence
+    
     def find_primer_position_in_wt(self, primer_seq):
-        """Find where this primer sequence appears in the wildtype sequence"""
-        if not self.wt_sequence or not primer_seq:
+        """Find where this primer sequence appears in the appropriate reference sequence"""
+        ref_seq = self.get_reference_sequence()
+        
+        if not ref_seq or not primer_seq:
             return -1
         
-        # Try forward strand
-        pos = self.wt_sequence.find(primer_seq)
+        # Try exact match first
+        pos = ref_seq.find(primer_seq)
         if pos != -1:
             return pos
         
-        # Try finding a substring (primer might be modified)
-        # Check overlapping regions
-        for i in range(len(self.wt_sequence) - len(primer_seq) + 1):
-            matches = sum(1 for a, b in zip(self.wt_sequence[i:i+len(primer_seq)], primer_seq) if a == b)
-            if matches / len(primer_seq) > 0.8:  # 80% match
-                return i
+        # Try finding best approximate match (primer might be modified)
+        best_match_pos = -1
+        best_match_score = 0
         
-        return -1
+        for i in range(len(ref_seq) - len(primer_seq) + 1):
+            matches = sum(1 for a, b in zip(ref_seq[i:i+len(primer_seq)], primer_seq) if a == b)
+            match_score = matches / len(primer_seq)
+            
+            if match_score > best_match_score and match_score > 0.75:  # 75% match threshold
+                best_match_score = match_score
+                best_match_pos = i
+        
+        return best_match_pos if best_match_score > 0.75 else -1
     
     def get_next_base_from_wt(self, current_seq, direction='3prime'):
-        """Get the next base from wildtype sequence"""
-        if not self.wt_sequence or not current_seq:
+        """Get the next base from appropriate reference sequence"""
+        ref_seq = self.get_reference_sequence()
+        
+        if not ref_seq or not current_seq:
             return None
         
         pos = self.find_primer_position_in_wt(current_seq)
@@ -3400,12 +3438,12 @@ class PrimerEditorWindow:
         if direction == '5prime':
             # Add to 5' end - get base before current position
             if pos > 0:
-                return self.wt_sequence[pos - 1]
+                return ref_seq[pos - 1]
         else:  # 3prime
             # Add to 3' end - get base after current position
             end_pos = pos + len(current_seq)
-            if end_pos < len(self.wt_sequence):
-                return self.wt_sequence[end_pos]
+            if end_pos < len(ref_seq):
+                return ref_seq[end_pos]
         
         return None
     
@@ -3464,7 +3502,7 @@ class PrimerEditorWindow:
         # Primer info
         info_frame = ctk.CTkFrame(self.window)
         info_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
-        info_frame.grid_columnconfigure(1, weight=1)
+        info_frame.grid_columnconfigure(5, weight=1)
         
         ctk.CTkLabel(info_frame, text="Primer Name:", 
                     font=self.controller.MEDIUMFONT).grid(row=0, column=0, sticky="w", padx=10, pady=5)
@@ -3473,16 +3511,21 @@ class PrimerEditorWindow:
         self.name_label.grid(row=0, column=1, sticky="w", padx=10, pady=5)
         
         ctk.CTkLabel(info_frame, text="Current Tm:", 
-                    font=self.controller.MEDIUMFONT).grid(row=1, column=0, sticky="w", padx=10, pady=5)
+                    font=self.controller.MEDIUMFONT).grid(row=0, column=2, sticky="w", padx=10, pady=5)
         self.tm_label = ctk.CTkLabel(info_frame, text="0.0 °C", 
                                      font=self.controller.MEDIUMFONT, text_color="green")
-        self.tm_label.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        self.tm_label.grid(row=0, column=3, sticky="w", padx=10, pady=5)
         
         ctk.CTkLabel(info_frame, text="Length:", 
-                    font=self.controller.MEDIUMFONT).grid(row=2, column=0, sticky="w", padx=10, pady=5)
+                    font=self.controller.MEDIUMFONT).grid(row=0, column=4, sticky="w", padx=10, pady=5)
         self.length_label = ctk.CTkLabel(info_frame, text="0 bp", 
                                         font=self.controller.MEDIUMFONT)
-        self.length_label.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        self.length_label.grid(row=0, column=5, sticky="w", padx=10, pady=5)
+        
+        # Add primer type indicator
+        self.type_label = ctk.CTkLabel(info_frame, text="", 
+                                      font=self.controller.MEDIUMFONT, text_color="#e28a4a")
+        self.type_label.grid(row=0, column=6, sticky="w", padx=10, pady=5)
         
         # Sequence editor frame
         editor_frame = ctk.CTkFrame(self.window)
@@ -3573,16 +3616,18 @@ class PrimerEditorWindow:
             primer = self.primer_data[index]
             
             # Update labels
-            self.name_label.configure(text=primer.get("Primer Name", ""))
+            primer_name = primer.get("Primer Name", "")
+            self.name_label.configure(text=primer_name)
             self.primer_label.configure(text=f"Primer {index + 1} of {len(self.primer_data)}")
             
-            # Update sequence display
-            sequence = primer.get("Primer Sequence", "")
-            self.sequence_text.delete("1.0", "end")
+            # Show primer type
+            if self.is_reverse_primer(primer_name):
+                self.type_label.configure(text="[Reverse]")
+            else:
+                self.type_label.configure(text="[Forward]")
             
-            # Format sequence with line breaks every 60 bases
-            formatted = '\n'.join([sequence[i:i+60] for i in range(0, len(sequence), 60)])
-            self.sequence_text.insert("1.0", formatted)
+            # Update sequence display with mutation highlighting
+            self.display_sequence_with_highlights()
             
             # Update Tm and length
             self.update_primer_info()
@@ -3594,7 +3639,57 @@ class PrimerEditorWindow:
             self.prev_btn.configure(state="normal" if index > 0 else "disabled")
             self.next_btn.configure(state="normal" if index < len(self.primer_data) - 1 else "disabled")
     
-    def update_next_base_labels(self):
+    def get_mutated_positions(self, primer_seq):
+        """Find positions in primer that differ from wildtype sequence"""
+        ref_seq = self.get_reference_sequence()
+        
+        if not ref_seq or not primer_seq:
+            return set()
+        
+        pos = self.find_primer_position_in_wt(primer_seq)
+        if pos == -1:
+            return set()
+        
+        mutated_positions = set()
+        wt_region = ref_seq[pos:pos + len(primer_seq)]
+        
+        for i, (primer_base, wt_base) in enumerate(zip(primer_seq, wt_region)):
+            if primer_base != wt_base:
+                mutated_positions.add(i)
+        
+        return mutated_positions
+    
+    def display_sequence_with_highlights(self):
+        """Display sequence with mutated bases highlighted in red"""
+        sequence = self.primer_data[self.current_index].get("Primer Sequence", "")
+        mutated_positions = self.get_mutated_positions(sequence)
+        
+        self.sequence_text.delete("1.0", "end")
+        
+        # Configure tag for red text
+        self.sequence_text.tag_config("mutation", foreground="red")
+        
+        # Insert sequence with highlighting
+        line_length = 60
+        current_line = 1
+        char_in_line = 0
+        
+        for i, base in enumerate(sequence):
+            if char_in_line >= line_length:
+                self.sequence_text.insert("end", "\n")
+                current_line += 1
+                char_in_line = 0
+            
+            if i in mutated_positions:
+                self.sequence_text.insert("end", base, "mutation")
+            else:
+                self.sequence_text.insert("end", base)
+            
+            char_in_line += 1
+    
+    def update_sequence_display(self):
+        """Update sequence display after modifications"""
+        self.display_sequence_with_highlights()
         """Update the labels showing which bases will be added next"""
         current_seq = self.get_current_sequence()
         
@@ -3649,11 +3744,9 @@ class PrimerEditorWindow:
             return
         
         new_seq = next_base + current_seq
+        self.primer_data[self.current_index]["Primer Sequence"] = new_seq
         
-        self.sequence_text.delete("1.0", "end")
-        formatted = '\n'.join([new_seq[i:i+60] for i in range(0, len(new_seq), 60)])
-        self.sequence_text.insert("1.0", formatted)
-        
+        self.update_sequence_display()
         self.update_primer_info()
         self.modified = True
         self.status_label.configure(text=f"Added {next_base} to 5' end", text_color="green")
@@ -3664,11 +3757,9 @@ class PrimerEditorWindow:
         if len(current_seq) > 1:
             removed = current_seq[0]
             new_seq = current_seq[1:]
+            self.primer_data[self.current_index]["Primer Sequence"] = new_seq
             
-            self.sequence_text.delete("1.0", "end")
-            formatted = '\n'.join([new_seq[i:i+60] for i in range(0, len(new_seq), 60)])
-            self.sequence_text.insert("1.0", formatted)
-            
+            self.update_sequence_display()
             self.update_primer_info()
             self.modified = True
             self.status_label.configure(text=f"Removed {removed} from 5' end", text_color="orange")
@@ -3685,11 +3776,9 @@ class PrimerEditorWindow:
             return
         
         new_seq = current_seq + next_base
+        self.primer_data[self.current_index]["Primer Sequence"] = new_seq
         
-        self.sequence_text.delete("1.0", "end")
-        formatted = '\n'.join([new_seq[i:i+60] for i in range(0, len(new_seq), 60)])
-        self.sequence_text.insert("1.0", formatted)
-        
+        self.update_sequence_display()
         self.update_primer_info()
         self.modified = True
         self.status_label.configure(text=f"Added {next_base} to 3' end", text_color="green")
@@ -3700,11 +3789,9 @@ class PrimerEditorWindow:
         if len(current_seq) > 1:
             removed = current_seq[-1]
             new_seq = current_seq[:-1]
+            self.primer_data[self.current_index]["Primer Sequence"] = new_seq
             
-            self.sequence_text.delete("1.0", "end")
-            formatted = '\n'.join([new_seq[i:i+60] for i in range(0, len(new_seq), 60)])
-            self.sequence_text.insert("1.0", formatted)
-            
+            self.update_sequence_display()
             self.update_primer_info()
             self.modified = True
             self.status_label.configure(text=f"Removed {removed} from 3' end", text_color="orange")
@@ -3768,7 +3855,6 @@ class PrimerEditorWindow:
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save primers:\n{str(e)}")
-
 
 class PrimerPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
