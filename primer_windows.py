@@ -500,7 +500,7 @@ class PrimerGenerator:
             f.write("=" * 120 + "\n\n")
 
             header = (f"{'Primer Name':<20}{'Primer Sequence':<60}{'Len':>6}"
-                      f"{'Tm':>9}{'OverlapLen':>11}{'OverlapTm':>10}{'Notes':>30}\n")
+                      f"{'Tm (°C)':>9}{'OverlapLen':>11}{'OverlapTm':>10}{'Notes':>30}\n")
             f.write(header)
             f.write("-" * 120 + "\n")
 
@@ -534,7 +534,7 @@ class PrimerGenerator:
         with open(filepath_csv, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
-                "Primer Name", "Primer Sequence", "Length", "Tm",
+                "Primer Name", "Primer Sequence", "Length", "Tm (°C)",
                 "Overlap Length", "Overlap Tm", "Mutations"
             ])
 
@@ -1542,7 +1542,7 @@ class InputPage(ctk.CTkFrame):
         file_path = self.get_sequences_file_path()
         if file_path.exists():
             try:
-                with open(file_path, "r", encoding="latin-1") as f:
+                with open(file_path, "r", encoding="utf-8") as f:
                     sequences = json.load(f)
                 return sequences
             except Exception as e:
@@ -3628,7 +3628,7 @@ class PrimerEditorWindow:
         # Update stored data
         self.primer_data[self.current_index]["Primer Sequence"] = sequence
         self.primer_data[self.current_index]["Length"] = str(length)
-        self.primer_data[self.current_index]["Tm"] = str(tm)
+        self.primer_data[self.current_index]["Tm (°C)"] = str(tm)
         
         # Update next base labels
         self.update_next_base_labels()
@@ -3753,7 +3753,7 @@ class PrimerEditorWindow:
             
             # Write updated data
             with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-                fieldnames = ["Primer Name", "Primer Sequence", "Length", "Tm", 
+                fieldnames = ["Primer Name", "Primer Sequence", "Length", "Tm (°C)", 
                             "Overlap Length", "Overlap Tm", "Mutations"]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
