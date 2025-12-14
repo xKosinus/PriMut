@@ -9,10 +9,13 @@ import re
 import copy
 import os
 import csv
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from collections import Counter, defaultdict
 import primer3
 import webbrowser
+import threading
+from dataclasses import dataclass
+from collections import defaultdict
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
@@ -404,6 +407,37 @@ class PrimerGenerator:
         if current_group:
             split_groups.append(current_group)
         return split_groups
+    
+
+    def calculate_gc_content(self, sequence):
+        """
+        Calculate GC content as a percentage.
+        Returns float representing percentage (0-100).
+        """
+        if not sequence:
+            return 0.0
+        
+        sequence = sequence.upper()
+        gc_count = sequence.count('G') + sequence.count('C')
+        return round((gc_count / len(sequence)) * 100, 1)
+
+    def check_gc_content(self, sequence):
+        """
+        Check if GC content is within acceptable ranges.
+        Returns tuple: (gc_percent, status, warning_message)
+        
+        Status: 'optimal' (40-60%), 'acceptable' (60-70%), 'warning' (>70% or <40%)
+        """
+        gc_percent = self.calculate_gc_content(sequence)
+        
+        if 40 <= gc_percent <= 60:
+            return gc_percent, 'optimal', ''
+        elif 60 < gc_percent <= 70:
+            return gc_percent, 'acceptable', 'GC content slightly high'
+        elif gc_percent > 70:
+            return gc_percent, 'warning', 'GC content too high (>70%)'
+        else:  # gc_percent < 40
+            return gc_percent, 'warning', 'GC content too low (<40%)'
 
     def generate_primers_for_construct(self, dna_sequence, mutations):
         mutations = self.flatten_mutations(mutations)
@@ -465,6 +499,11 @@ class PrimerGenerator:
 
                 depends_on = [] if len(primer_sets) == 0 else [primer_sets[-1]['set_id']]
 
+                # Calculate GC content for primers
+                forward_gc, forward_gc_status, forward_gc_warning = self.check_gc_content(forward_primer)
+                reverse_gc, reverse_gc_status, reverse_gc_warning = self.check_gc_content(reverse_primer)
+                overlap_gc, overlap_gc_status, overlap_gc_warning = self.check_gc_content(overlap_seq)
+
                 primer_sets.append({
                     'set_id': set_id,
                     'depends_on': depends_on,
@@ -479,7 +518,13 @@ class PrimerGenerator:
                     'forward_length': len(forward_primer),
                     'reverse_length': len(reverse_primer),
                     'overlap_length': len(overlap_seq),
-                    'tm_difference': tm_diff
+                    'tm_difference': tm_diff,
+                    'forward_gc_content': forward_gc,
+                    'forward_gc_status': forward_gc_status,  
+                    'reverse_gc_content': reverse_gc,  
+                    'reverse_gc_status': reverse_gc_status,  
+                    'overlap_gc_content': overlap_gc,  
+                    'overlap_gc_status': overlap_gc_status,  
                 })
 
                 previous_sub_group += sub_group
@@ -487,7 +532,7 @@ class PrimerGenerator:
         return primer_sets
 
     def save_primer_list(self, primer_data, output_dir=None, filename="primer_list.txt"):
-        """Save primer data to text and CSV files."""
+        """Save primer data to text and CSV files with GC content."""
         if output_dir is None:
             output_dir = os.path.expanduser("~/Mutagenesis")
 
@@ -497,24 +542,27 @@ class PrimerGenerator:
         filepath_txt = os.path.join(output_dir, filename)
         with open(filepath_txt, 'w') as f:
             f.write("Site-Directed Mutagenesis Primer List\n")
-            f.write("=" * 120 + "\n\n")
+            f.write("=" * 165 + "\n\n")
 
             header = (f"{'Primer Name':<20}{'Primer Sequence':<60}{'Len':>6}"
-                      f"{'Tm (C)':>9}{'OverlapLen':>11}{'OverlapTm':>10}{'Notes':>30}\n")
+                    f"{'Tm (C)':>9}{'GC%':>6}{'OverlapLen':>11}{'OverlapTm':>10}{'OverlapGC%':>11}{'Notes':>30}\n")
             f.write(header)
-            f.write("-" * 120 + "\n")
+            f.write("-" * 165 + "\n")
 
             for entry in primer_data:
                 primer_base = "_".join(entry['all_covered_mutations'])
                 notes = ",".join(entry['all_covered_mutations'])
+                overlap_gc = entry.get('overlap_gc_content', 0.0)
 
                 # Forward primer
                 f.write(f"{primer_base + '_for':<20}")
                 f.write(f"{entry['forward_primer']:<60}")
                 f.write(f"{entry['forward_length']:>6}")
                 f.write(f"{entry['forward_tm']:>9.1f}")
+                f.write(f"{entry.get('forward_gc_content', 0.0):>6.1f}")
                 f.write(f"{entry['overlap_length']:>11}")
                 f.write(f"{entry['overlap_tm']:>10.1f}")
+                f.write(f"{overlap_gc:>11.1f}")
                 f.write(f"{notes:>30}\n")
 
                 # Reverse primer
@@ -522,10 +570,12 @@ class PrimerGenerator:
                 f.write(f"{entry['reverse_primer']:<60}")
                 f.write(f"{entry['reverse_length']:>6}")
                 f.write(f"{entry['reverse_tm']:>9.1f}")
+                f.write(f"{entry.get('reverse_gc_content', 0.0):>6.1f}")
                 f.write(f"{entry['overlap_length']:>11}")
                 f.write(f"{entry['overlap_tm']:>10.1f}")
+                f.write(f"{overlap_gc:>11.1f}")
                 f.write(f"{notes:>30}\n")
-                f.write("-" * 120 + "\n")
+                f.write("-" * 165 + "\n")
 
             f.write(f"\nSummary:\nTotal primer pairs: {len(primer_data)}\n")
 
@@ -534,20 +584,24 @@ class PrimerGenerator:
         with open(filepath_csv, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
-                "Primer Name", "Primer Sequence", "Length", "Tm (C)",
-                "Overlap Length", "Overlap Tm", "Mutations"
+                "Primer Name", "Primer Sequence", "Length", "Tm (C)", "GC Content (%)",
+                "Overlap Length", "Overlap Tm", "Overlap GC (%)", "Mutations"
             ])
 
             for entry in primer_data:
                 all_muts = ",".join(entry['all_covered_mutations'])
                 base_name = "_".join(entry['all_covered_mutations'])
+                overlap_gc = entry.get('overlap_gc_content', 0.0)
+                
                 writer.writerow([
                     f"{base_name}_for", entry['forward_primer'], entry['forward_length'],
-                    entry['forward_tm'], entry['overlap_length'], entry['overlap_tm'], all_muts
+                    entry['forward_tm'], entry.get('forward_gc_content', 0.0),
+                    entry['overlap_length'], entry['overlap_tm'], overlap_gc, all_muts
                 ])
                 writer.writerow([
                     f"{base_name}_rev", entry['reverse_primer'], entry['reverse_length'],
-                    entry['reverse_tm'], entry['overlap_length'], entry['overlap_tm'], all_muts
+                    entry['reverse_tm'], entry.get('reverse_gc_content', 0.0),
+                    entry['overlap_length'], entry['overlap_tm'], overlap_gc, all_muts
                 ])
 
         print(f"Primer files saved:\n  - {filepath_txt}\n  - {filepath_csv}")
@@ -1285,6 +1339,405 @@ class BaseProteinPage:
                         print(f"Warning: WT AA at position {pos} is {protein_list[idx]}, expected {orig_aa}")
                     protein_list[idx] = new_aa
         return "".join(protein_list)
+    
+@dataclass
+class SLiCEFragment:
+    """Represents a fragment to be amplified for SLiCE assembly"""
+    name: str
+    start: int  # 0-based index
+    end: int    # 0-based index (exclusive)
+    sequence: str
+    is_insert: bool = True  # True for insert, False for backbone
+
+
+@dataclass
+class SLiCEPrimer:
+    """Represents a primer for SLiCE assembly"""
+    name: str
+    sequence: str
+    tm: float
+    length: int
+    fragment_name: str
+    is_forward: bool
+    overlap_sequence: str = ""
+    overlap_tm: float = 0.0
+    overlap_length: int = 0
+
+
+class PlasmidAnnotator:
+    """Automatic plasmid feature annotation"""
+    
+    # Common plasmid features with regex patterns
+    FEATURES = {
+        'promoter': [
+            (r'TTGACA.{15,19}TATAAT', 'bacterial promoter (-35/-10)'),
+            (r'TATA[AT]A[AT]', 'TATA box'),
+        ],
+        'terminator': [
+            (r'AAAAAA', 'poly-A signal'),
+            (r'TTTTTT', 'transcription terminator'),
+        ],
+        'restriction_site': [
+            (r'GAATTC', 'EcoRI'),
+            (r'GGATCC', 'BamHI'),
+            (r'AAGCTT', 'HindIII'),
+            (r'CTGCAG', 'PstI'),
+            (r'GTCGAC', 'SalI'),
+            (r'GCTAGC', 'NheI'),
+            (r'CATATG', 'NdeI'),
+            (r'GGTCTC', 'BsaI'),
+            (r'CACCTGC', 'AarI'),
+        ],
+        'ori': [
+            (r'TTGAGA[GT]ACAGC', 'ColE1 ori'),
+            (r'AATGATACGGCGAC', 'pBR322 ori'),
+        ],
+        'marker': [
+            (r'ATG[ATGC]{300,900}(TAG|TAA|TGA)', 'resistance gene'),
+        ]
+    }
+    
+    @staticmethod
+    def annotate_sequence(sequence: str) -> List[Dict]:
+        """Automatically detect and annotate features in plasmid sequence"""
+        annotations = []
+        sequence_upper = sequence.upper()
+        
+        for feature_type, patterns in PlasmidAnnotator.FEATURES.items():
+            for pattern, description in patterns:
+                for match in re.finditer(pattern, sequence_upper):
+                    annotations.append({
+                        'type': feature_type,
+                        'start': match.start(),
+                        'end': match.end(),
+                        'description': description,
+                        'sequence': match.group()
+                    })
+        
+        # Sort by position
+        annotations.sort(key=lambda x: x['start'])
+        return annotations
+
+
+class SLiCEPrimerDesigner:
+    """Design primers for SLiCE assembly with configurable parameters"""
+    
+    def __init__(self, 
+                 overlap_length_range: Tuple[int, int] = (15, 25),
+                 overlap_tm_range: Tuple[int, int] = (55, 65),
+                 primer_tm_target: float = 60.0,
+                 primer_tm_range: Tuple[float, float] = (58.0, 62.0)):
+        """
+        Initialize SLiCE primer designer
+        
+        Args:
+            overlap_length_range: (min, max) length for overlapping regions in bp
+            overlap_tm_range: (min, max) Tm for overlapping regions in °C
+            primer_tm_target: Target Tm for primer binding region
+            primer_tm_range: Acceptable Tm range for primers
+        """
+        self.overlap_min_len = overlap_length_range[0]
+        self.overlap_max_len = overlap_length_range[1]
+        self.overlap_min_tm = overlap_tm_range[0]
+        self.overlap_max_tm = overlap_tm_range[1]
+        self.primer_tm_target = primer_tm_target
+        self.primer_tm_min = primer_tm_range[0]
+        self.primer_tm_max = primer_tm_range[1]
+    
+    def reverse_complement(self, sequence: str) -> str:
+        """Return reverse complement of DNA sequence"""
+        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G',
+                     'a': 't', 't': 'a', 'g': 'c', 'c': 'g',
+                     'N': 'N', 'n': 'n'}
+        return ''.join([complement.get(base, base) for base in sequence[::-1]]).upper()
+    
+    def calculate_tm(self, sequence: str) -> float:
+        """Calculate melting temperature using primer3"""
+        if not sequence:
+            return 0.0
+        try:
+            return round(primer3.calc_tm(sequence.upper()), 2)
+        except:
+            # Fallback: Wallace rule for short sequences, modified for longer
+            gc = sequence.upper().count('G') + sequence.upper().count('C')
+            at = sequence.upper().count('A') + sequence.upper().count('T')
+            if len(sequence) < 14:
+                return 2.0 * at + 4.0 * gc
+            else:
+                gc_percent = (gc / len(sequence)) * 100
+                return 81.5 + 0.41 * gc_percent - (675 / len(sequence))
+    
+    def find_optimal_overlap(self, seq1: str, seq2: str, is_circular: bool = False) -> Tuple[str, int, float]:
+        """
+        Find optimal overlap between two sequences
+        
+        Args:
+            seq1: 3' end of first fragment
+            seq2: 5' end of second fragment (or beginning if circular)
+            is_circular: True if connecting last and first fragment
+            
+        Returns:
+            (overlap_sequence, overlap_length, overlap_tm)
+        """
+        # Try different overlap lengths from max to min
+        for length in range(self.overlap_max_len, self.overlap_min_len - 1, -1):
+            if len(seq1) < length or len(seq2) < length:
+                continue
+            
+            # Get potential overlap from end of seq1
+            overlap = seq1[-length:]
+            
+            # Check if it matches beginning of seq2 (for circular, seq2 is the start)
+            if seq2[:length].upper() == overlap.upper():
+                tm = self.calculate_tm(overlap)
+                
+                # Check if Tm is in acceptable range
+                if self.overlap_min_tm <= tm <= self.overlap_max_tm:
+                    return overlap, length, tm
+        
+        # If no perfect match, return best available
+        length = min(self.overlap_min_len, len(seq1), len(seq2))
+        overlap = seq1[-length:]
+        tm = self.calculate_tm(overlap)
+        return overlap, length, tm
+    
+    def extend_to_tm(self, template: str, start_pos: int, direction: str, 
+                     target_tm: float, max_length: int = 30) -> Tuple[str, float]:
+        """
+        Extend sequence from start position until target Tm is reached
+        
+        Args:
+            template: Template sequence
+            start_pos: Starting position
+            direction: 'forward' or 'reverse'
+            target_tm: Target melting temperature
+            max_length: Maximum primer length
+            
+        Returns:
+            (primer_sequence, actual_tm)
+        """
+        if direction == 'forward':
+            current_seq = template[start_pos:start_pos + 15]  # Start with 15bp
+            for length in range(15, min(max_length, len(template) - start_pos)):
+                current_seq = template[start_pos:start_pos + length]
+                tm = self.calculate_tm(current_seq)
+                if tm >= self.primer_tm_min:
+                    return current_seq, tm
+        else:  # reverse
+            end_pos = start_pos
+            current_seq = template[max(0, end_pos - 15):end_pos]
+            for length in range(15, min(max_length, end_pos)):
+                current_seq = template[end_pos - length:end_pos]
+                tm = self.calculate_tm(current_seq)
+                if tm >= self.primer_tm_min:
+                    return current_seq, tm
+        
+        # Return best attempt
+        return current_seq, self.calculate_tm(current_seq)
+    
+    def design_primers_for_fragments(self, fragments: List[SLiCEFragment], 
+                                     circular: bool = True) -> List[SLiCEPrimer]:
+        """
+        Design primers for a set of fragments to be assembled via SLiCE
+        
+        Args:
+            fragments: List of fragments in assembly order
+            circular: True if assembling into circular plasmid
+            
+        Returns:
+            List of primers for all fragments
+        """
+        primers = []
+        
+        for i, fragment in enumerate(fragments):
+            # Determine previous and next fragments for overlaps
+            prev_fragment = fragments[i - 1] if i > 0 else (fragments[-1] if circular else None)
+            next_fragment = fragments[i + 1] if i < len(fragments) - 1 else (fragments[0] if circular else None)
+            
+            # --- FORWARD PRIMER ---
+            # Forward primer needs overlap with previous fragment's end
+            if prev_fragment:
+                overlap_seq, overlap_len, overlap_tm = self.find_optimal_overlap(
+                    prev_fragment.sequence[-self.overlap_max_len:],
+                    fragment.sequence[:self.overlap_max_len]
+                )
+            else:
+                overlap_seq, overlap_len, overlap_tm = "", 0, 0.0
+            
+            # Binding region: extend from start of fragment
+            binding_seq, binding_tm = self.extend_to_tm(
+                fragment.sequence, 0, 'forward', self.primer_tm_target
+            )
+            
+            # Complete forward primer = overlap + binding
+            fwd_primer_seq = overlap_seq + binding_seq
+            fwd_primer_tm = self.calculate_tm(fwd_primer_seq)
+            
+            primers.append(SLiCEPrimer(
+                name=f"{fragment.name}_F",
+                sequence=fwd_primer_seq,
+                tm=fwd_primer_tm,
+                length=len(fwd_primer_seq),
+                fragment_name=fragment.name,
+                is_forward=True,
+                overlap_sequence=overlap_seq,
+                overlap_tm=overlap_tm,
+                overlap_length=overlap_len
+            ))
+            
+            # --- REVERSE PRIMER ---
+            # Reverse primer needs overlap with next fragment's start
+            if next_fragment:
+                overlap_seq, overlap_len, overlap_tm = self.find_optimal_overlap(
+                    fragment.sequence[-self.overlap_max_len:],
+                    next_fragment.sequence[:self.overlap_max_len]
+                )
+                # For reverse primer, we need reverse complement of this overlap
+                overlap_seq_rc = self.reverse_complement(overlap_seq)
+            else:
+                overlap_seq_rc, overlap_len, overlap_tm = "", 0, 0.0
+            
+            # Binding region: extend from end of fragment (reverse direction)
+            binding_seq, binding_tm = self.extend_to_tm(
+                fragment.sequence, len(fragment.sequence), 'reverse', self.primer_tm_target
+            )
+            
+            # Reverse complement the binding region
+            binding_seq_rc = self.reverse_complement(binding_seq)
+            
+            # Complete reverse primer = overlap_RC + binding_RC
+            rev_primer_seq = overlap_seq_rc + binding_seq_rc
+            rev_primer_tm = self.calculate_tm(rev_primer_seq)
+            
+            primers.append(SLiCEPrimer(
+                name=f"{fragment.name}_R",
+                sequence=rev_primer_seq,
+                tm=rev_primer_tm,
+                length=len(rev_primer_seq),
+                fragment_name=fragment.name,
+                is_forward=False,
+                overlap_sequence=overlap_seq_rc,
+                overlap_tm=overlap_tm,
+                overlap_length=overlap_len
+            ))
+        
+        return primers
+    
+    def validate_assembly(self, fragments: List[SLiCEFragment], circular: bool = True) -> Dict:
+        """
+        Validate that fragments can be assembled properly
+        
+        Returns:
+            Dictionary with validation results
+        """
+        issues = []
+        
+        # Check fragment sizes
+        for frag in fragments:
+            if len(frag.sequence) < 50:
+                issues.append(f"Fragment {frag.name} is very short ({len(frag.sequence)} bp)")
+        
+        # Check overlaps
+        for i in range(len(fragments)):
+            next_i = (i + 1) % len(fragments) if circular else i + 1
+            if next_i < len(fragments):
+                frag1 = fragments[i]
+                frag2 = fragments[next_i]
+                
+                # Check if there's any homology
+                overlap, length, tm = self.find_optimal_overlap(
+                    frag1.sequence[-self.overlap_max_len:],
+                    frag2.sequence[:self.overlap_max_len]
+                )
+                
+                if length < self.overlap_min_len:
+                    issues.append(f"Insufficient overlap between {frag1.name} and {frag2.name}")
+                elif tm < self.overlap_min_tm:
+                    issues.append(f"Low overlap Tm between {frag1.name} and {frag2.name}: {tm}°C")
+                elif tm > self.overlap_max_tm:
+                    issues.append(f"High overlap Tm between {frag1.name} and {frag2.name}: {tm}°C")
+        
+        return {
+            'valid': len(issues) == 0,
+            'issues': issues,
+            'total_fragments': len(fragments),
+            'total_length': sum(len(f.sequence) for f in fragments)
+        }
+    
+    def export_primers_to_csv(self, primers: List[SLiCEPrimer], filename: str):
+        """Export primers to CSV file"""
+        import csv
+        
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'Primer Name', 'Sequence', 'Length (bp)', 'Tm (°C)',
+                'Fragment', 'Direction', 'Overlap Length', 'Overlap Tm'
+            ])
+            
+            for primer in primers:
+                writer.writerow([
+                    primer.name,
+                    primer.sequence,
+                    primer.length,
+                    primer.tm,
+                    primer.fragment_name,
+                    'Forward' if primer.is_forward else 'Reverse',
+                    primer.overlap_length,
+                    primer.overlap_tm
+                ])
+
+
+# Example usage
+if __name__ == "__main__":
+    # Example: Design primers for 3-fragment assembly
+    
+    # Sample sequences (in practice, these come from user selection)
+    fragments = [
+        SLiCEFragment(
+            name="Insert1",
+            start=0,
+            end=500,
+            sequence="ATGCGATCGATCGATCG" * 30,  # Placeholder
+            is_insert=True
+        ),
+        SLiCEFragment(
+            name="Insert2", 
+            start=500,
+            end=1000,
+            sequence="GCTAGCTAGCTAGCTAG" * 30,
+            is_insert=True
+        ),
+        SLiCEFragment(
+            name="Backbone",
+            start=1000,
+            end=4000,
+            sequence="TTAATTAATTAATTAAT" * 100,
+            is_insert=False
+        )
+    ]
+    
+    # Initialize designer with custom parameters
+    designer = SLiCEPrimerDesigner(
+        overlap_length_range=(18, 25),
+        overlap_tm_range=(58, 65),
+        primer_tm_target=60.0
+    )
+    
+    # Validate assembly
+    validation = designer.validate_assembly(fragments, circular=True)
+    print(f"Assembly validation: {validation}")
+    
+    # Design primers
+    primers = designer.design_primers_for_fragments(fragments, circular=True)
+    
+    # Display results
+    for primer in primers:
+        print(f"\n{primer.name}:")
+        print(f"  Sequence: {primer.sequence}")
+        print(f"  Length: {primer.length} bp")
+        print(f"  Tm: {primer.tm}°C")
+        print(f"  Overlap: {primer.overlap_length} bp, Tm: {primer.overlap_tm}°C")
 
 
 class MutagenesisApp(ctk.CTk):
@@ -1300,9 +1753,9 @@ class MutagenesisApp(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        self.LARGEFONT = ctk.CTkFont(family="Verdana", size=18, weight="bold")
-        self.MEDIUMFONT = ctk.CTkFont(family="Verdana", size=12)
-        self.SMALLFONT = ctk.CTkFont(family="Verdana", size=10)
+        self.LARGEFONT = ctk.CTkFont(family="Verdana", size=24, weight="bold")
+        self.MEDIUMFONT = ctk.CTkFont(family="Verdana", size=14, weight="bold")
+        self.SMALLFONT = ctk.CTkFont(family="Verdana", size=12)
 
         # Load last used output directory or use default
         last_output_dir = self.config_manager.get('last_output_dir', str(Path.cwd() / "Mutagenesis"))
@@ -1325,7 +1778,9 @@ class MutagenesisApp(ctk.CTk):
             ("Variant Proteins", VariantProteinPage),
             ("Protocol Results", ProtocolResultsPage),
             ("Primer", PrimerPage),
-            ("Mutation Extractor", MutationExtractorPage)
+            ("Mutation Extractor", MutationExtractorPage),
+            ("Mutation Eraser", MutationFailureHandler),
+            ("SLiCE Designer", SLiCEDesignerPage)
         ]
 
         num_nav_buttons = len(nav_buttons)
@@ -1345,10 +1800,13 @@ class MutagenesisApp(ctk.CTk):
         container.grid_columnconfigure(0, weight=1)
         container.grid_rowconfigure(0, weight=1)
 
+        self.modified_variants = set()  # Variants that were updated
+        self.repair_variants = set()    # Variants that were newly created
+    
         # Initialize frames
         self.frames = {}
         page_classes = [InputPage, MutationExtractorPage, DatabankPage, WildtypeProteinPage, 
-                       VariantProteinPage, ProtocolResultsPage, PrimerPage]
+                       VariantProteinPage, ProtocolResultsPage, PrimerPage, MutationFailureHandler, SLiCEDesignerPage]
         
         for F in page_classes:
             frame = F(container, self)
@@ -1387,6 +1845,20 @@ class MutagenesisApp(ctk.CTk):
     def save_output_dir(self):
         """Save output directory when it changes"""
         self.config_manager.set('last_output_dir', self.output_dir.get())
+
+    def mark_variants_modified(self, updated_ids, new_repair_ids):
+        """Mark variants as modified or newly created for highlighting"""
+        self.modified_variants.update(updated_ids)
+        self.repair_variants.update(new_repair_ids)
+    
+    def is_variant_modified(self, variant_id):
+        """Check if variant was modified"""
+        return variant_id in self.modified_variants
+    
+    def is_variant_repair(self, variant_id):
+        """Check if variant is a repair variant"""
+        return variant_id in self.repair_variants
+
 
 class InputPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -1512,11 +1984,11 @@ class InputPage(ctk.CTkFrame):
         button_frame.grid(row=6, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
         
         run_btn = ctk.CTkButton(button_frame, text="Run Complete Workflow", 
-                                font=self.controller.MEDIUMFONT, command=self.run_workflow)
+                                font=self.controller.MEDIUMFONT, fg_color="green", command=self.run_workflow)
         run_btn.grid(row=0, column=0, padx=10, pady=10, sticky="w")
         
         undo_btn = ctk.CTkButton(button_frame, text="Undo Last Change", 
-                                font=self.controller.MEDIUMFONT, command=self.undo_change)
+                                font=self.controller.MEDIUMFONT, fg_color="orange", command=self.undo_change)
         undo_btn.grid(row=0, column=1, padx=10, pady=10, sticky="w")
 
     def create_status_section(self):
@@ -1908,7 +2380,6 @@ class InputPage(ctk.CTkFrame):
                 text=f"Output directory changed to: {new_dir}", 
                 text_color="green"
             )
-
 
 class WildtypeProteinPage(ctk.CTkFrame, BaseProteinPage):
     def __init__(self, parent, controller):
@@ -2372,8 +2843,8 @@ class DatabankPage(ctk.CTkFrame):
         first_row_buttons = [
             ("Select All", self.select_all, 0),
             ("Deselect All", self.deselect_all, 1),
-            ("Delete Selected Variants", self.delete_variants, 2),
-            ("Undo Delete", self.undo_delete, 3)
+            ("Delete Selection", self.delete_variants, 2, "orange"),
+            ("Undo Delete", self.undo_delete, 3, "gray")
         ]
         
         # Second row buttons
@@ -2385,14 +2856,21 @@ class DatabankPage(ctk.CTkFrame):
             ("Edit Variants", self.open_variant_editor, 4)
         ]
         
-        # Create first row
-        for text, command, col in first_row_buttons:
-            btn = ctk.CTkButton(button_frame, text=text, command=command, width=160)
+        for text, command, col, *color in first_row_buttons:  # *color unpacks optional 4th element
+            fg_color = color[0] if color else None  # Use color if provided, else None (default)
+            if fg_color:
+                btn = ctk.CTkButton(button_frame, text=text, command=command, width=160, font=self.controller.MEDIUMFONT, fg_color=fg_color)
+            else:
+                btn = ctk.CTkButton(button_frame, text=text, command=command, width=160, font=self.controller.MEDIUMFONT)
             btn.grid(row=0, column=col, sticky="w", padx=10, pady=5)
-        
+
         # Create second row
-        for text, command, col in second_row_buttons:
-            btn = ctk.CTkButton(button_frame, text=text, command=command, width=160)
+        for text, command, col, *color in second_row_buttons:
+            fg_color = color[0] if color else None
+            if fg_color:
+                btn = ctk.CTkButton(button_frame, text=text, command=command, width=160, font=self.controller.MEDIUMFONT, fg_color=fg_color)
+            else:
+                btn = ctk.CTkButton(button_frame, text=text, command=command, width=160, font=self.controller.MEDIUMFONT)
             btn.grid(row=1, column=col, sticky="w", padx=10, pady=5)
 
     def create_status_section(self):
@@ -2517,11 +2995,37 @@ class DatabankPage(ctk.CTkFrame):
         self.update_variant_display()
 
     def update_variant_display(self):
+        """Update variant display with highlighting for modified variants"""
         # Clear existing widgets
         for widget in self.variant_listbox.winfo_children():
             widget.destroy()
         self.check_vars.clear()
         self.checkboxes.clear()
+
+        # Add legend if there are modified/repair variants
+        if self.controller.modified_variants or self.controller.repair_variants:
+            legend_frame = ctk.CTkFrame(self.variant_listbox)
+            legend_frame.pack(fill="x", padx=10, pady=(5, 10))
+            
+            ctk.CTkLabel(legend_frame, text="Legend:", 
+                        font=self.controller.SMALLFONT, 
+                        text_color="gray").pack(side="left", padx=5)
+            
+            # Modified variants indicator
+            if self.controller.modified_variants:
+                modified_indicator = ctk.CTkLabel(legend_frame, text="  Modified  ",
+                                                fg_color="#FFF59D", text_color="black",
+                                                corner_radius=5,
+                                                font=self.controller.SMALLFONT)
+                modified_indicator.pack(side="left", padx=5)
+            
+            # Repair variants indicator
+            if self.controller.repair_variants:
+                repair_indicator = ctk.CTkLabel(legend_frame, text="  Repair  ",
+                                            fg_color="#A5D6A7", text_color="black",
+                                            corner_radius=5,
+                                            font=self.controller.SMALLFONT)
+                repair_indicator.pack(side="left", padx=5)
 
         # Update results label
         total = len(self.all_variants)
@@ -2543,18 +3047,66 @@ class DatabankPage(ctk.CTkFrame):
             elif max_muts is not None:
                 filter_desc.append(f"mutations: ≤{max_muts}")
         
+        # Add highlighting info to results label
+        modified_count = len([v for v in self.filtered_variants.keys() 
+                            if self.controller.is_variant_modified(v)])
+        repair_count = len([v for v in self.filtered_variants.keys() 
+                        if self.controller.is_variant_repair(v)])
+        
         if not filter_desc:
-            self.results_label.configure(text=f"Showing all {total} variants")
+            result_text = f"Showing all {total} variants"
         else:
             filters = "; ".join(filter_desc)
-            self.results_label.configure(text=f"Showing {filtered} of {total} matching [{filters}]")
+            result_text = f"Showing {filtered} of {total} matching [{filters}]"
+        
+        if modified_count > 0 or repair_count > 0:
+            highlight_info = []
+            if modified_count > 0:
+                highlight_info.append(f"{modified_count} modified")
+            if repair_count > 0:
+                highlight_info.append(f"{repair_count} repair")
+            result_text += f" ({', '.join(highlight_info)})"
+        
+        self.results_label.configure(text=result_text)
 
-        # Create checkboxes for filtered variants
+        # Create checkboxes for filtered variants with highlighting
         for var_id, muts in sorted(self.filtered_variants.items()):
             var_text = f"{var_id}: {muts if muts != '(none)' else 'no mutations'}"
+            
+            # Determine highlight color
+            fg_color = None
+            text_color = "white"
+            hover_color = None
+            
+            if self.controller.is_variant_repair(var_id):
+                fg_color = "#A5D6A7"  # Light green for repair variants
+                text_color = "black"
+                hover_color = "#81C784"  # Darker green on hover
+            elif self.controller.is_variant_modified(var_id):
+                fg_color = "#FFF59D"  # Light yellow for modified variants
+                text_color = "black"
+                hover_color = "#FFF176"  # Darker yellow on hover
+            
+            # Create checkbox with highlighting
             check_var = ctk.IntVar(value=0)
-            cb = ctk.CTkCheckBox(self.variant_listbox, text=var_text, variable=check_var)
-            cb.pack(fill="x", padx=10, pady=2, anchor="w")
+            
+            if fg_color:
+                # Create frame for highlighted checkbox
+                highlight_frame = ctk.CTkFrame(self.variant_listbox, 
+                                            fg_color=fg_color,
+                                            corner_radius=5)
+                highlight_frame.pack(fill="x", padx=10, pady=2, anchor="w")
+                
+                cb = ctk.CTkCheckBox(highlight_frame, text=var_text, variable=check_var,
+                                text_color=text_color,
+                                fg_color=hover_color if hover_color else fg_color,
+                                hover_color=hover_color if hover_color else fg_color)
+                cb.pack(fill="x", padx=5, pady=2, anchor="w")
+            else:
+                # Normal checkbox without highlighting
+                cb = ctk.CTkCheckBox(self.variant_listbox, text=var_text, variable=check_var)
+                cb.pack(fill="x", padx=10, pady=2, anchor="w")
+            
             self.check_vars.append((var_id, check_var))
             self.checkboxes.append(cb)
 
@@ -3949,7 +4501,7 @@ class PrimerPage(ctk.CTkFrame):
         return textbox
 
     def load_primers(self):
-        """Load primer_list.csv and display in table with mutation highlighting"""
+        """Load primer_list.csv and display in table with mutation highlighting and GC content"""
         # Clear old table
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
@@ -3972,7 +4524,7 @@ class PrimerPage(ctk.CTkFrame):
                 warning_lbl = ctk.CTkLabel(self.scroll_frame, 
                     text="⚠️ No wildtype sequence found - mutations won't be highlighted", 
                     text_color="orange")
-                warning_lbl.grid(row=0, column=0, columnspan=4, pady=10, sticky="ew")
+                warning_lbl.grid(row=0, column=0, columnspan=6, pady=10, sticky="ew")
 
             # Read CSV
             with open(path, newline="", encoding='utf-8') as csvfile:
@@ -3987,21 +4539,38 @@ class PrimerPage(ctk.CTkFrame):
             # Store primer data for editing
             self.primer_data = primers
 
-            # Configure grid columns
-            headers = ["Primer Name", "Primer Sequence", "Tm (C)", "Overlap Tm (C)"]
+            # Configure grid columns - now 6 columns
+            headers = ["Primer Name", "Primer Sequence", "Tm (C)", "GC%", "Overlap Tm (C)", "Overlap GC%"]
             
-            # Make sequence column wider to accommodate textboxes
             self.scroll_frame.grid_columnconfigure(0, weight=0, minsize=180)  # Name
-            self.scroll_frame.grid_columnconfigure(1, weight=1, minsize=420)  # Sequence (wider)
+            self.scroll_frame.grid_columnconfigure(1, weight=1, minsize=420)  # Sequence
             self.scroll_frame.grid_columnconfigure(2, weight=0, minsize=80)   # Tm
-            self.scroll_frame.grid_columnconfigure(3, weight=0, minsize=100)  # Overlap Tm
+            self.scroll_frame.grid_columnconfigure(3, weight=0, minsize=80)   # GC%
+            self.scroll_frame.grid_columnconfigure(4, weight=0, minsize=100)  # Overlap Tm
+            self.scroll_frame.grid_columnconfigure(5, weight=0, minsize=100)  # Overlap GC%
+
+            # Helper function to determine GC color with your custom colors
+            def get_gc_color(gc_content_str):
+                gc_color = "#1A531A"  # Dark green (optimal)
+                if gc_content_str:
+                    try:
+                        gc_val = float(gc_content_str)
+                        if 40 <= gc_val <= 60:
+                            gc_color = "#1A531A"  # Dark green (optimal)
+                        elif 60 < gc_val <= 70:
+                            gc_color = "#C0A50B"  # Gold (acceptable)
+                        else:
+                            gc_color = "#C54343"  # Red (warning)
+                    except ValueError:
+                        pass
+                return gc_color
 
             # Table header row
             header_row = 0 if self.wt_sequence else 1
             
             for i, header in enumerate(headers):
                 lbl = ctk.CTkLabel(self.scroll_frame, text=header, 
-                                  font=ctk.CTkFont(family="Verdana", size=14, weight="bold"))
+                                font=ctk.CTkFont(family="Verdana", size=14, weight="bold"))
                 lbl.grid(row=header_row, column=i, padx=5, pady=10, sticky="w")
 
             # Table rows
@@ -4011,10 +4580,12 @@ class PrimerPage(ctk.CTkFrame):
                 
                 primer_name = primer.get("Primer Name", "")
                 primer_seq = primer.get("Primer Sequence", "")
+                gc_content = primer.get("GC Content (%)", "")
+                overlap_gc_content = primer.get("Overlap GC (%)", "")
                 
                 # Column 0: Primer Name
                 name_lbl = ctk.CTkLabel(self.scroll_frame, text=primer_name,
-                                       font=ctk.CTkFont(family="Verdana", size=12))
+                                    font=ctk.CTkFont(family="Verdana", size=12))
                 name_lbl.grid(row=r, column=0, padx=5, pady=2, sticky="w")
                 row_widgets.append(name_lbl)
                 
@@ -4024,25 +4595,46 @@ class PrimerPage(ctk.CTkFrame):
                     seq_textbox.grid(row=r, column=1, padx=5, pady=2, sticky="ew")
                     row_widgets.append(seq_textbox)
                 else:
-                    # Fallback to regular label if no wildtype
                     seq_lbl = ctk.CTkLabel(self.scroll_frame, text=primer_seq,
-                                          font=ctk.CTkFont(family="Courier", size=12))
+                                        font=ctk.CTkFont(family="Courier", size=12))
                     seq_lbl.grid(row=r, column=1, padx=5, pady=2, sticky="w")
                     row_widgets.append(seq_lbl)
                 
                 # Column 2: Tm
                 tm_lbl = ctk.CTkLabel(self.scroll_frame, 
-                                     text=primer.get("Tm (C)", ""),
-                                     font=ctk.CTkFont(family="Verdana", size=12))
+                                    text=primer.get("Tm (C)", ""),
+                                    font=ctk.CTkFont(family="Verdana", size=12))
                 tm_lbl.grid(row=r, column=2, padx=5, pady=2, sticky="w")
                 row_widgets.append(tm_lbl)
                 
-                # Column 3: Overlap Tm
+                # Column 3: Primer GC Content (with color coding)
+                primer_gc_color = get_gc_color(gc_content)
+                gc_lbl = ctk.CTkLabel(self.scroll_frame, 
+                                    text=f"{gc_content}%",
+                                    font=ctk.CTkFont(family="Verdana", size=12),
+                                    fg_color=primer_gc_color,
+                                    corner_radius=5,
+                                    width=60)
+                gc_lbl.grid(row=r, column=3, padx=5, pady=2, sticky="w")
+                row_widgets.append(gc_lbl)
+                
+                # Column 4: Overlap Tm
                 overlap_tm_lbl = ctk.CTkLabel(self.scroll_frame,
-                                             text=primer.get("Overlap Tm", primer.get("Overlap Tm (C)", "")),
-                                             font=ctk.CTkFont(family="Verdana", size=12))
-                overlap_tm_lbl.grid(row=r, column=3, padx=5, pady=2, sticky="w")
+                                            text=primer.get("Overlap Tm", primer.get("Overlap Tm (C)", "")),
+                                            font=ctk.CTkFont(family="Verdana", size=12))
+                overlap_tm_lbl.grid(row=r, column=4, padx=5, pady=2, sticky="w")
                 row_widgets.append(overlap_tm_lbl)
+                
+                # Column 5: Overlap GC Content (with color coding)
+                overlap_gc_color = get_gc_color(overlap_gc_content)
+                overlap_gc_lbl = ctk.CTkLabel(self.scroll_frame, 
+                                            text=f"{overlap_gc_content}%",
+                                            font=ctk.CTkFont(family="Verdana", size=12),
+                                            fg_color=overlap_gc_color,
+                                            corner_radius=5,
+                                            width=60)
+                overlap_gc_lbl.grid(row=r, column=5, padx=5, pady=2, sticky="w")
+                row_widgets.append(overlap_gc_lbl)
                 
                 self.table_labels.append(row_widgets)
 
@@ -4497,6 +5089,1634 @@ class MutationExtractorPage(ctk.CTkFrame):
         except Exception as e:
             self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
 
+
+class MutationFailureHandler(ctk.CTkFrame):
+    """Handle failed mutations with validation warnings for potentially missed variants"""
+    
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        
+        # Configure grid
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        
+        # Track variant data and checkboxes
+        self.variant_rows = {}  # {variant_id: {'mutations': [...], 'checkboxes': [...]}}
+        self.all_variants = {}  # Store all variants
+        self.filtered_variants = {}  # Currently filtered variants
+        
+        # Search variables
+        self.search_fields = []
+        self.search_vars = []
+        
+        # Undo stack for this page
+        self.failure_undo_stack = []
+        
+        self.setup_ui()
+        self.add_search_field(is_first=True)  # Initialize with first search field
+        self.load_variants()
+    
+    def setup_ui(self):
+        # Header
+        header_frame = ctk.CTkFrame(self)
+        header_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=20)
+        header_frame.grid_columnconfigure(0, weight=1)
+        
+        title = ctk.CTkLabel(header_frame, text="Mutation Failure Handler",
+                            corner_radius=10, fg_color="#4a90e2",
+                            text_color="white", font=self.controller.LARGEFONT,
+                            height=50)
+        title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        
+        back_btn = ctk.CTkButton(header_frame, text="Back to Databank",
+                                command=lambda: self.controller.show_frame(DatabankPage))
+        back_btn.grid(row=0, column=1, padx=10, pady=10, sticky="e")
+        
+        # Main content frame (split into left and right)
+        content_frame = ctk.CTkFrame(self)
+        content_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=5)
+        content_frame.grid_columnconfigure(0, weight=2)
+        content_frame.grid_columnconfigure(1, weight=1)
+        content_frame.grid_rowconfigure(0, weight=1)
+        
+        # Left side - Variant table
+        self.create_variant_table(content_frame)
+        
+        # Right side - Search section
+        self.create_search_section(content_frame)
+        
+        # Results label
+        self.results_label = ctk.CTkLabel(self, text="", text_color="gray")
+        self.results_label.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 0))
+        
+        # Action buttons
+        button_frame = ctk.CTkFrame(self)
+        button_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+        
+        # First row of buttons
+        validate_btn = ctk.CTkButton(button_frame, text="Validate Selection",
+                                     command=self.validate_selection, width=150, font=self.controller.MEDIUMFONT,
+                                     fg_color="orange")
+        validate_btn.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        
+        process_btn = ctk.CTkButton(button_frame, text="Process Failed Mutations",
+                                   command=self.process_failures, font=self.controller.MEDIUMFONT,
+                                   fg_color="green", width=200)
+        process_btn.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        
+        clear_btn = ctk.CTkButton(button_frame, text="Clear All Checks",
+                                 command=self.clear_all_checks, font=self.controller.MEDIUMFONT, width=120)
+        clear_btn.grid(row=0, column=2, padx=10, pady=5, sticky="w")
+        
+        # Second row - Undo button
+        undo_btn = ctk.CTkButton(button_frame, text="Undo Last Processing",
+                                command=self.undo_last_processing, font=self.controller.MEDIUMFONT, width=150,
+                                fg_color="gray")
+        undo_btn.grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        
+        refresh_btn = ctk.CTkButton(button_frame, text="Refresh Variants",
+                                   command=self.load_variants, font=self.controller.MEDIUMFONT, width=120)
+        refresh_btn.grid(row=1, column=1, padx=10, pady=5, sticky="w")
+        
+        # Status label
+        self.status_label = ctk.CTkLabel(button_frame, text="",
+                                        font=self.controller.MEDIUMFONT)
+        self.status_label.grid(row=2, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+    
+    def create_variant_table(self, parent):
+        """Create the left side variant table with horizontal scrolling"""
+        variant_frame = ctk.CTkFrame(parent)
+        variant_frame.grid(row=0, column=0, sticky="nsew", padx=(5, 2), pady=5)
+        variant_frame.grid_columnconfigure(0, weight=1)
+        variant_frame.grid_rowconfigure(1, weight=1)
+        
+        # Info label
+        info_label = ctk.CTkLabel(variant_frame,
+                                 text="✓ Check mutations that FAILED (missing)",
+                                 font=self.controller.SMALLFONT, text_color="orange")
+        info_label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        
+        # Create a frame to hold both scrollbars and the canvas
+        scroll_container = ctk.CTkFrame(variant_frame)
+        scroll_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        scroll_container.grid_columnconfigure(0, weight=1)
+        scroll_container.grid_rowconfigure(0, weight=1)
+        
+        # Create canvas with both scrollbars
+        canvas = ctk.CTkCanvas(scroll_container, bg=self._apply_appearance_mode(ctk.ThemeManager.theme["CTkFrame"]["fg_color"]))
+        canvas.grid(row=0, column=0, sticky="nsew")
+        
+        # Vertical scrollbar
+        v_scrollbar = ctk.CTkScrollbar(scroll_container, orientation="vertical", command=canvas.yview)
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        
+        # Horizontal scrollbar
+        h_scrollbar = ctk.CTkScrollbar(scroll_container, orientation="horizontal", command=canvas.xview)
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        # Configure canvas scrolling
+        canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        
+        # Create the scrollable frame inside canvas
+        self.scroll_frame = ctk.CTkFrame(canvas)
+        canvas_window = canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
+        
+        # Update scroll region when frame size changes
+        def configure_scroll_region(event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        
+        self.scroll_frame.bind("<Configure>", configure_scroll_region)
+        
+        # Make canvas window expand with canvas width but allow horizontal scrolling
+        def configure_canvas_window(event):
+            # Set minimum width to canvas width, but allow content to be wider
+            min_width = event.width
+            canvas.itemconfig(canvas_window, width=max(min_width, self.scroll_frame.winfo_reqwidth()))
+        
+        canvas.bind("<Configure>", configure_canvas_window)
+        
+        # Mouse wheel scrolling (vertical)
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        
+        def on_mousewheel_linux_up(event):
+            canvas.yview_scroll(-1, "units")
+        
+        def on_mousewheel_linux_down(event):
+            canvas.yview_scroll(1, "units")
+        
+        # Bind mouse wheel events
+        def bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", on_mousewheel)
+            canvas.bind_all("<Button-4>", on_mousewheel_linux_up)
+            canvas.bind_all("<Button-5>", on_mousewheel_linux_down)
+        
+        def unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+        
+        canvas.bind("<Enter>", bind_mousewheel)
+        canvas.bind("<Leave>", unbind_mousewheel)
+        
+        # Store references
+        self._canvas = canvas
+        self._h_scrollbar = h_scrollbar
+        self._v_scrollbar = v_scrollbar
+    
+    def create_search_section(self, parent):
+        """Create the right side search section (similar to DatabankPage)"""
+        search_main_frame = ctk.CTkFrame(parent)
+        search_main_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 5), pady=5)
+        search_main_frame.grid_columnconfigure(0, weight=1)
+        search_main_frame.grid_rowconfigure(1, weight=1)
+        
+        ctk.CTkLabel(search_main_frame, text="Search & Filter:", 
+                    font=self.controller.MEDIUMFONT).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 5))
+        
+        self.search_scroll = ScrollableFrameWithWheel(search_main_frame)
+        self.search_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        self.search_scroll.grid_columnconfigure(0, weight=1)
+        
+        # Create search options
+        self.create_search_options()
+    
+    def create_search_options(self):
+        """Create search options frame"""
+        options_frame = ctk.CTkFrame(self.search_scroll)
+        options_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        options_frame.grid_columnconfigure(5, weight=1)
+        
+        # Mutation count filter
+        ctk.CTkLabel(options_frame, text="Mutations:", 
+                    font=self.controller.SMALLFONT).grid(
+            row=0, column=0, padx=5, pady=5, sticky="w")
+        
+        self.min_mutations_var = ctk.StringVar(value="")
+        min_entry = ctk.CTkEntry(options_frame, textvariable=self.min_mutations_var, 
+                               placeholder_text="Min", width=50)
+        min_entry.grid(row=0, column=1, padx=2, pady=5, sticky="w")
+        self.min_mutations_var.trace("w", self.on_search_change)
+        
+        ctk.CTkLabel(options_frame, text="to", font=self.controller.SMALLFONT).grid(
+            row=0, column=2, padx=2, pady=5, sticky="w")
+        
+        self.max_mutations_var = ctk.StringVar(value="")
+        max_entry = ctk.CTkEntry(options_frame, textvariable=self.max_mutations_var, 
+                               placeholder_text="Max", width=50)
+        max_entry.grid(row=0, column=3, padx=2, pady=5, sticky="w")
+        self.max_mutations_var.trace("w", self.on_search_change)
+        
+        clear_mut_btn = ctk.CTkButton(options_frame, text="Clear", 
+                                     command=self.clear_mutation_filter, width=60)
+        clear_mut_btn.grid(row=0, column=4, padx=10, pady=5, sticky="w")
+        
+        # Logic controls
+        ctk.CTkLabel(options_frame, text="Logic:", font=self.controller.SMALLFONT).grid(
+            row=1, column=0, padx=5, pady=5, sticky="w")
+        
+        self.search_logic_var = ctk.StringVar(value="AND")
+        logic_menu = ctk.CTkOptionMenu(options_frame, values=["AND", "OR"], 
+                                      variable=self.search_logic_var,
+                                      command=self.on_search_change, width=70)
+        logic_menu.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        
+        self.add_btn = ctk.CTkButton(options_frame, text="+", 
+                                    command=self.add_search_field, width=30, height=30)
+        self.add_btn.grid(row=1, column=2, padx=2, pady=5, sticky="w")
+        
+        self.remove_btn = ctk.CTkButton(options_frame, text="−", 
+                                       command=self.remove_search_field,
+                                       width=30, height=30, state="disabled")
+        self.remove_btn.grid(row=1, column=3, padx=2, pady=5, sticky="w")
+        
+        clear_all_btn = ctk.CTkButton(options_frame, text="Clear All", 
+                                     command=self.clear_all_search, width=80)
+        clear_all_btn.grid(row=1, column=4, padx=10, pady=5, sticky="w")
+        
+        # Help text
+        help_label = ctk.CTkLabel(options_frame, 
+                                 text="Use AND to match all terms, OR for any. Filter by mutation count.",
+                                 font=self.controller.SMALLFONT, text_color="gray")
+        help_label.grid(row=2, column=0, columnspan=6, padx=5, pady=(0, 5), sticky="w")
+    
+    def add_search_field(self, is_first=False):
+        """Add a new search field"""
+        field_num = len(self.search_fields)
+        search_var = ctk.StringVar()
+        search_var.trace("w", self.on_search_change)
+        self.search_vars.append(search_var)
+        
+        field_frame = ctk.CTkFrame(self.search_scroll)
+        field_frame.grid(row=field_num + 2, column=0, sticky="ew", padx=5, pady=2)
+        field_frame.grid_columnconfigure(1, weight=1)
+        
+        label_text = "Search:" if is_first else "Search:"
+        label = ctk.CTkLabel(field_frame, text=label_text, font=self.controller.SMALLFONT)
+        label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        
+        search_entry = ctk.CTkEntry(field_frame, textvariable=search_var,
+                                   placeholder_text="Search by variant ID or mutations...")
+        search_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+        
+        field_data = {
+            'frame': field_frame, 
+            'label': label, 
+            'entry': search_entry, 
+            'var': search_var
+        }
+        self.search_fields.append(field_data)
+        
+        self.remove_btn.configure(state="normal" if len(self.search_fields) > 1 else "disabled")
+        self.filter_variants()
+    
+    def remove_search_field(self):
+        """Remove the last search field"""
+        if len(self.search_fields) <= 1:
+            return
+        
+        last_field = self.search_fields.pop()
+        self.search_vars.pop()
+        last_field['frame'].destroy()
+        
+        self.remove_btn.configure(state="normal" if len(self.search_fields) > 1 else "disabled")
+        self.filter_variants()
+    
+    def clear_all_search(self):
+        """Clear all search fields"""
+        for search_var in self.search_vars:
+            search_var.set("")
+    
+    def clear_mutation_filter(self):
+        """Clear mutation count filter"""
+        self.min_mutations_var.set("")
+        self.max_mutations_var.set("")
+    
+    def on_search_change(self, *args):
+        """Called when search criteria changes (debounced)"""
+        # Cancel any pending filter operation
+        if hasattr(self, '_filter_timer'):
+            self.after_cancel(self._filter_timer)
+        
+        # Schedule filter after 300ms of no typing (debounce)
+        self._filter_timer = self.after(1000, self.filter_variants)
+    
+    def get_active_search_terms(self):
+        """Get list of active search terms"""
+        return [var.get().lower().strip() for var in self.search_vars if var.get().strip()]
+    
+    def get_mutation_count_filter(self):
+        """Get the mutation count filter range"""
+        min_str = self.min_mutations_var.get().strip()
+        max_str = self.max_mutations_var.get().strip()
+        
+        min_val = None
+        max_val = None
+        
+        try:
+            if min_str:
+                min_val = int(min_str)
+        except ValueError:
+            pass
+            
+        try:
+            if max_str:
+                max_val = int(max_str)
+        except ValueError:
+            pass
+            
+        return min_val, max_val
+    
+    def count_mutations(self, mutation_string):
+        """Count the number of mutations in a mutation string"""
+        if not mutation_string or mutation_string == "(none)":
+            return 0
+        return len([m for m in mutation_string.split(',') if m.strip()])
+    
+    def load_variants(self):
+        """Load variants from databank and store in all_variants"""
+        # Load databank
+        databank = self.controller.get_databank()
+        
+        # Store all variants (excluding wildtype and empty)
+        self.all_variants = {}
+        for variant_id in sorted(databank.keys()):
+            mutation_str = databank[variant_id]
+            
+            # Skip wildtype or variants with no mutations
+            if mutation_str == "(none)" or not mutation_str or mutation_str == "":
+                continue
+            
+            self.all_variants[variant_id] = mutation_str
+        
+        if not self.all_variants:
+            # Clear existing table
+            for widget in self.scroll_frame.winfo_children():
+                widget.destroy()
+            self.variant_rows.clear()
+            
+            no_data_lbl = ctk.CTkLabel(self.scroll_frame,
+                                      text="No variants in databank. Run workflow first.",
+                                      font=self.controller.MEDIUMFONT, text_color="orange")
+            no_data_lbl.grid(row=0, column=0, pady=20)
+            self.status_label.configure(text="No variants found", text_color="orange")
+            return
+        
+        # Apply filter
+        self.filter_variants()
+    
+    def filter_variants(self):
+        """Filter variants based on search criteria (optimized)"""
+        search_terms = self.get_active_search_terms()
+        min_muts, max_muts = self.get_mutation_count_filter()
+        
+        # Quick path: no filters = show all
+        if not search_terms and min_muts is None and max_muts is None:
+            self.filtered_variants = self.all_variants.copy()
+            self.update_variant_display()
+            return
+        
+        # Show "filtering" message for large datasets
+        if len(self.all_variants) > 100:
+            self.status_label.configure(text="Filtering...", text_color="blue")
+            self.update_idletasks()
+        
+        # Optimized filtering
+        self.filtered_variants = {}
+        logic = self.search_logic_var.get()
+        
+        # Pre-compile search terms for faster matching
+        search_terms_lower = [term.lower() for term in search_terms]
+        
+        for var_id, mutations in self.all_variants.items():
+            # Pre-compute search text once
+            var_text_lower = f"{var_id} {mutations}".lower()
+            
+            # Text search (optimized)
+            text_match = True
+            if search_terms_lower:
+                if logic == "AND":
+                    text_match = all(term in var_text_lower for term in search_terms_lower)
+                else:  # OR logic
+                    text_match = any(term in var_text_lower for term in search_terms_lower)
+            
+            if not text_match:
+                continue  # Skip early if text doesn't match
+            
+            # Mutation count filter (only if text matched)
+            if min_muts is not None or max_muts is not None:
+                # Fast mutation count (avoid split if possible)
+                mutation_count = mutations.count(',') + 1 if mutations else 0
+                
+                if min_muts is not None and mutation_count < min_muts:
+                    continue
+                if max_muts is not None and mutation_count > max_muts:
+                    continue
+            
+            # Both criteria matched
+            self.filtered_variants[var_id] = mutations
+        
+        # Update display
+        self.update_variant_display()
+    
+    def update_variant_display(self):
+        """Update the variant table display (optimized for speed)"""
+        # Defer updates if user is still typing (additional optimization)
+        if hasattr(self, '_display_timer'):
+            self.after_cancel(self._display_timer)
+        
+        # For very large filtered sets, add a small delay to batch UI updates
+        if len(self.filtered_variants) > 200:
+            self._display_timer = self.after(100, self._update_variant_display_now)
+            return
+        
+        self._update_variant_display_now()
+    
+    def _update_variant_display_now(self):
+        """Actually update the display (internal method)"""
+        # Clear existing table efficiently
+        for widget in self.scroll_frame.winfo_children():
+            widget.destroy()
+        self.variant_rows.clear()
+        
+        # Update results label
+        total = len(self.all_variants)
+        filtered = len(self.filtered_variants)
+        terms = self.get_active_search_terms()
+        min_muts, max_muts = self.get_mutation_count_filter()
+        
+        filter_desc = []
+        if terms:
+            logic = self.search_logic_var.get()
+            terms_txt = f" {logic} ".join([f'"{x}"' for x in terms])
+            filter_desc.append(f"text: {terms_txt}")
+        
+        if min_muts is not None or max_muts is not None:
+            if min_muts is not None and max_muts is not None:
+                filter_desc.append(f"mutations: {min_muts}-{max_muts}")
+            elif min_muts is not None:
+                filter_desc.append(f"mutations: ≥{min_muts}")
+            elif max_muts is not None:
+                filter_desc.append(f"mutations: ≤{max_muts}")
+        
+        if not filter_desc:
+            self.results_label.configure(text=f"Showing all {total} variants with mutations")
+        else:
+            filters = "; ".join(filter_desc)
+            self.results_label.configure(text=f"Showing {filtered} of {total} matching [{filters}]")
+        
+        if not self.filtered_variants:
+            no_results_lbl = ctk.CTkLabel(self.scroll_frame,
+                                         text="No variants match your search criteria.",
+                                         font=self.controller.MEDIUMFONT, text_color="orange")
+            no_results_lbl.grid(row=0, column=0, pady=20)
+            self._update_scroll_region()
+            return
+        
+        # Configure grid columns - set minimum widths but allow expansion
+        self.scroll_frame.grid_columnconfigure(0, weight=0, minsize=150)
+        
+        # Pre-calculate max columns needed
+        max_mutations = max(len(muts.split(',')) for muts in self.filtered_variants.values())
+        for col in range(1, max_mutations + 1):
+            self.scroll_frame.grid_columnconfigure(col, weight=0, minsize=120)  # Slightly wider for readability
+        
+        # Create header
+        header_font = ctk.CTkFont(family="Verdana", size=14, weight="bold")
+        ctk.CTkLabel(self.scroll_frame, text="Variant ID", font=header_font).grid(
+            row=0, column=0, padx=10, pady=10, sticky="w")
+        
+        ctk.CTkLabel(self.scroll_frame, text="Mutations (Check if FAILED/MISSING)", 
+                    font=header_font).grid(
+            row=0, column=1, padx=10, pady=10, sticky="w", columnspan=max_mutations)
+        
+        # Cache fonts
+        medium_font = self.controller.MEDIUMFONT
+        small_font = self.controller.SMALLFONT
+        
+        # Create rows for each filtered variant (optimized)
+        row_num = 1
+        sorted_variants = sorted(self.filtered_variants.keys())
+        
+        for variant_id in sorted_variants:
+            mutation_str = self.filtered_variants[variant_id]
+            
+            # Parse mutations once
+            mutations = [m.strip() for m in mutation_str.split(',')]
+            
+            # Variant ID label - reuse font
+            id_label = ctk.CTkLabel(self.scroll_frame, text=variant_id, font=medium_font)
+            id_label.grid(row=row_num, column=0, padx=10, pady=5, sticky="w")
+            
+            # Create checkboxes for each mutation
+            checkboxes = []
+            for col, mutation in enumerate(mutations, start=1):
+                var = ctk.BooleanVar(value=False)
+                checkbox = ctk.CTkCheckBox(self.scroll_frame, text=mutation,
+                                          variable=var, font=small_font)
+                checkbox.grid(row=row_num, column=col, padx=5, pady=5, sticky="w")
+                checkboxes.append((mutation, var))
+            
+            # Store data
+            self.variant_rows[variant_id] = {
+                'mutations': mutations,
+                'checkboxes': checkboxes,
+                'label': id_label,
+                'row': row_num
+            }
+            
+            row_num += 1
+            
+            # Update UI every 20 rows to show progress for large datasets
+            if row_num % 20 == 0 and len(self.filtered_variants) > 50:
+                self.scroll_frame.update_idletasks()
+                self._update_scroll_region()
+        
+        # Final scroll region update
+        self._update_scroll_region()
+        
+        self.status_label.configure(text=f"Displaying {len(self.variant_rows)} variants",
+                                   text_color="green")
+    
+    def _update_scroll_region(self):
+        """Update the canvas scroll region to fit content"""
+        if hasattr(self, '_canvas'):
+            self.scroll_frame.update_idletasks()
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+    
+    def clear_all_checks(self):
+        """Clear all checked mutations"""
+        for variant_id, data in self.variant_rows.items():
+            for mutation, var in data['checkboxes']:
+                var.set(False)
+        self.status_label.configure(text="All checks cleared", text_color="blue")
+    
+    def get_failed_mutations(self):
+        """Get dictionary of variants with their failed mutations"""
+        failed = {}
+        
+        for variant_id, data in self.variant_rows.items():
+            failed_muts = []
+            present_muts = []
+            
+            for mutation, var in data['checkboxes']:
+                if var.get():  # Checked = failed/missing
+                    failed_muts.append(mutation)
+                else:  # Unchecked = present
+                    present_muts.append(mutation)
+            
+            if failed_muts:
+                failed[variant_id] = {
+                    'failed': failed_muts,
+                    'present': present_muts,
+                    'original': data['mutations']
+                }
+        
+        return failed
+    
+    def undo_last_processing(self):
+        """Undo the last failure processing operation"""
+        if not self.failure_undo_stack:
+            messagebox.showinfo("Nothing to Undo", "No previous failure processing to undo.")
+            self.status_label.configure(text="No undo available", text_color="orange")
+            return
+        
+        try:
+            # Get last state
+            undo_data = self.failure_undo_stack.pop()
+            
+            # Restore databank
+            self.controller.save_databank(undo_data['databank'])
+            
+            # Remove generated repair protocol if it exists
+            output_dir = Path(self.controller.output_dir.get())
+            repair_protocol = output_dir / "protocols" / "repair_protocol.pdf"
+            if repair_protocol.exists():
+                repair_protocol.unlink()
+            
+            # Refresh displays
+            self.load_variants()
+            if hasattr(self.controller, 'frames') and DatabankPage in self.controller.frames:
+                self.controller.frames[DatabankPage].refresh_variants()
+            
+            messagebox.showinfo("Undo Successful", 
+                f"Reverted:\n• {len(undo_data['updated_ids'])} updated variant(s)\n• {len(undo_data['repair_ids'])} repair variant(s)")
+            self.status_label.configure(text="Undo successful - previous state restored", text_color="green")
+            
+        except Exception as e:
+            messagebox.showerror("Undo Error", f"Failed to undo:\n{str(e)}")
+            self.status_label.configure(text=f"Undo failed: {str(e)}", text_color="red")
+
+    # ... (keep all other methods: build_variant_hierarchy_optimized, validate_selection, 
+    #      process_failures, generate_repair_protocol - they remain the same)
+    
+    def process_failures(self):
+        """Process failed mutations with undo support"""
+        failed_variants = self.get_failed_mutations()
+        
+        if not failed_variants:
+            messagebox.showinfo("No Failures", "No failed mutations marked.")
+            return
+        
+        # Show confirmation dialog
+        summary = []
+        for variant_id, info in failed_variants.items():
+            summary.append(f"{variant_id}: {len(info['failed'])} failed mutation(s)")
+        
+        confirm_msg = "Found failures in the following variants:\n\n" + "\n".join(summary)
+        confirm_msg += "\n\nThis will:\n"
+        confirm_msg += "1. Update marked variants (remove failed mutations)\n"
+        confirm_msg += "2. Create new repair variants (with all mutations)\n"
+        confirm_msg += "3. Generate repair protocol\n\n"
+        confirm_msg += "⚠️ Only manually marked variants will be updated.\n"
+        confirm_msg += "Run 'Validate Selection' first to check for missed variants.\n\n"
+        confirm_msg += "Continue?"
+        
+        if not messagebox.askyesno("Confirm Processing", confirm_msg):
+            return
+        
+        try:
+            self.status_label.configure(text="Processing failures...", text_color="blue")
+            
+            # Load current databank and create undo backup
+            databank = self.controller.get_databank()
+            undo_backup = copy.deepcopy(databank)
+            
+            # Get next available variant number
+            output_dir = Path(self.controller.output_dir.get())
+            input_page = self.controller.frames[InputPage]
+            variant_prefix = input_page.var_prefix.get().strip()
+            
+            existing_ids = [int(v_id.replace(variant_prefix, ''))
+                          for v_id in databank.keys()
+                          if v_id.startswith(variant_prefix) and v_id.replace(variant_prefix, '').isdigit()]
+            next_id = max(existing_ids, default=0) + 1
+            
+            # Process each failed variant
+            repair_variants = []
+            updated_variants = []
+            updated_variant_ids = []
+            repair_variant_ids = []
+            
+            for variant_id, info in failed_variants.items():
+                # Update original variant (remove failed mutations)
+                present_muts_str = ','.join(info['present']) if info['present'] else '(none)'
+                databank[variant_id] = present_muts_str
+                updated_variants.append((variant_id, present_muts_str))
+                updated_variant_ids.append(variant_id)
+                
+                # Create repair variant for each failed mutation separately
+                for failed_mut in info['failed']:
+                    new_variant_id = f"{variant_prefix}{next_id:02d}"
+                    next_id += 1
+                    
+                    # New variant has all original mutations
+                    all_mutations = ','.join(info['original'])
+                    databank[new_variant_id] = all_mutations
+                    
+                    repair_variants.append({
+                        'new_id': new_variant_id,
+                        'parent_id': variant_id,
+                        'missing_mutation': failed_mut,
+                        'all_mutations': all_mutations
+                    })
+                    repair_variant_ids.append(new_variant_id)
+            
+            # Save undo state BEFORE saving changes
+            self.failure_undo_stack.append({
+                'databank': undo_backup,
+                'updated_ids': updated_variant_ids,
+                'repair_ids': repair_variant_ids
+            })
+            
+            # Keep only last 10 undo states
+            if len(self.failure_undo_stack) > 10:
+                self.failure_undo_stack.pop(0)
+            
+            # Save updated databank
+            self.controller.save_databank(databank)
+            
+            # Mark variants for highlighting
+            self.controller.mark_variants_modified(updated_variant_ids, repair_variant_ids)
+            
+            # Generate repair protocol
+            self.generate_repair_protocol(repair_variants, updated_variants, variant_prefix)
+            
+            # Refresh displays
+            self.load_variants()
+            if hasattr(self.controller, 'frames') and DatabankPage in self.controller.frames:
+                self.controller.frames[DatabankPage].refresh_variants()
+            
+            # Show success message
+            success_msg = f"Successfully processed:\n\n"
+            success_msg += f"• Updated {len(updated_variants)} variant(s) (highlighted in yellow)\n"
+            success_msg += f"• Created {len(repair_variants)} repair variant(s) (highlighted in green)\n\n"
+            success_msg += "Repair protocol saved to protocols/repair_protocol.pdf\n\n"
+            success_msg += "💡 Use 'Undo Last Processing' to revert these changes if needed."
+            
+            messagebox.showinfo("Success", success_msg)
+            self.status_label.configure(text=f"Processed {len(failed_variants)} variants with failures",
+                                       text_color="green")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to process mutations:\n{str(e)}")
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
+
+    def build_variant_hierarchy_optimized(self, databank):
+        """Optimized: Build parent-child relationships based on subset relations"""
+        # Convert mutation strings to frozensets for fast comparison
+        variant_sets = {}
+        for variant_id, mutation_str in databank.items():
+            if mutation_str and mutation_str != "(none)" and mutation_str != "":
+                muts = frozenset(m.strip() for m in mutation_str.split(','))
+                variant_sets[variant_id] = muts
+        
+        # Build hierarchy with O(n²) instead of worse complexity
+        hierarchy = {}  # {child_id: parent_id}
+        
+        # Sort variants by mutation count for efficiency
+        sorted_variants = sorted(variant_sets.items(), key=lambda x: len(x[1]))
+        
+        for i, (child_id, child_muts) in enumerate(sorted_variants):
+            best_parent = None
+            best_parent_size = 0
+            
+            # Only check variants with fewer mutations (potential parents)
+            for parent_id, parent_muts in sorted_variants[:i]:
+                # Quick size check before subset operation
+                parent_size = len(parent_muts)
+                if parent_size <= best_parent_size:
+                    continue
+                
+                if parent_size > len(child_muts):
+                    break  # No point checking larger sets
+                
+                # Check if parent is subset of child
+                if parent_muts.issubset(child_muts):
+                    if parent_size > best_parent_size:
+                        best_parent = parent_id
+                        best_parent_size = parent_size
+            
+            if best_parent:
+                hierarchy[child_id] = best_parent
+        
+        return hierarchy, variant_sets
+
+    def validate_selection(self):
+        """Validate user's selection and warn about potentially missed variants"""
+        marked_failures = self.get_failed_mutations()
+        
+        if not marked_failures:
+            messagebox.showinfo("Validation", "No failed mutations marked. Nothing to validate.")
+            return
+        
+        # Update status immediately
+        self.status_label.configure(text="Validating... Please wait", text_color="blue")
+        self.update_idletasks()  # Force UI update
+        
+        # Disable validation button during processing
+        validate_btn = None
+        for widget in self.winfo_children():
+            if isinstance(widget, ctk.CTkFrame):
+                for child in widget.winfo_children():
+                    if isinstance(child, ctk.CTkButton) and child.cget("text") == "Validate Selection":
+                        validate_btn = child
+                        child.configure(state="disabled")
+                        break
+        
+        def validation_task():
+            """Run validation in background thread"""
+            try:
+                # Load databank and build hierarchy (optimized)
+                databank = self.controller.get_databank()
+                hierarchy, variant_sets = self.build_variant_hierarchy_optimized(databank)
+                
+                # Pre-convert marked failures to frozensets for fast operations
+                marked_failed_sets = {
+                    vid: frozenset(info['failed']) 
+                    for vid, info in marked_failures.items()
+                }
+                
+                # Build reverse hierarchy for efficiency (parent -> children)
+                children_map = defaultdict(list)
+                for child, parent in hierarchy.items():
+                    children_map[parent].append(child)
+                
+                warnings = []
+                
+                # Check 1: Trace back through parents (optimized)
+                for marked_variant, failure_info in marked_failures.items():
+                    failed_mutations = marked_failed_sets[marked_variant]
+                    
+                    # Trace back through parents
+                    current = marked_variant
+                    unchecked_parents = []
+                    
+                    # Follow parent chain (usually short)
+                    while current in hierarchy:
+                        parent = hierarchy[current]
+                        parent_muts = variant_sets.get(parent)
+                        
+                        if not parent_muts:
+                            break
+                        
+                        # Fast intersection check
+                        failed_in_parent = failed_mutations & parent_muts
+                        
+                        if failed_in_parent:
+                            # Check if user marked this parent
+                            if parent in marked_failed_sets:
+                                parent_failed = marked_failed_sets[parent]
+                                missing_checks = failed_in_parent - parent_failed
+                                
+                                if missing_checks:
+                                    unchecked_parents.append((parent, missing_checks))
+                            else:
+                                unchecked_parents.append((parent, failed_in_parent))
+                        
+                        current = parent
+                    
+                    # Generate warning for this variant
+                    if unchecked_parents:
+                        warning_text = f"\n⚠️ Variant {marked_variant}:"
+                        warning_text += f"\n   Failed mutations: {', '.join(sorted(failed_mutations))}"
+                        warning_text += f"\n   Potentially missed parent variants:"
+                        
+                        for parent_id, missed_muts in unchecked_parents:
+                            warning_text += f"\n      • {parent_id}: should check {', '.join(sorted(missed_muts))}"
+                        
+                        warnings.append(warning_text)
+                
+                # Check 2: Inconsistencies with children (optimized)
+                for marked_variant in marked_failures:
+                    if marked_variant not in children_map:
+                        continue  # No children, skip
+                    
+                    failed_mutations = marked_failed_sets[marked_variant]
+                    parent_muts = variant_sets.get(marked_variant)
+                    
+                    if not parent_muts:
+                        continue
+                    
+                    # Check each child
+                    for child in children_map[marked_variant]:
+                        if child not in marked_failed_sets:
+                            continue
+                        
+                        child_failed = marked_failed_sets[child]
+                        
+                        # Fast intersection and difference
+                        inconsistent = (child_failed & parent_muts) - failed_mutations
+                        
+                        if inconsistent:
+                            warning_text = f"\n⚠️ Inconsistency detected:"
+                            warning_text += f"\n   Child variant {child} has these mutations marked as failed: {', '.join(sorted(inconsistent))}"
+                            warning_text += f"\n   But parent variant {marked_variant} has them unmarked (present)"
+                            warning_text += f"\n   If the mutation failed in {child}, it likely also failed in {marked_variant}"
+                            warnings.append(warning_text)
+                
+                # Schedule UI update on main thread
+                self.after(0, lambda: show_results(warnings))
+                
+            except Exception as e:
+                # Schedule error display on main thread
+                import traceback
+                traceback.print_exc()
+                self.after(0, lambda: show_error(str(e)))
+        
+        def show_results(warnings):
+            """Display results on main thread"""
+            # Re-enable button
+            if validate_btn:
+                validate_btn.configure(state="normal")
+            
+            if warnings:
+                warning_msg = "⚠️ VALIDATION WARNINGS ⚠️\n"
+                warning_msg += "="*60 + "\n"
+                warning_msg += "The following issues were detected:\n"
+                warning_msg += "".join(warnings)
+                warning_msg += "\n\n" + "="*60
+                warning_msg += "\n\nPlease review and update your selection before processing."
+                
+                # Create scrollable dialog
+                validation_window = ctk.CTkToplevel(self)
+                validation_window.title("Validation Warnings")
+                validation_window.geometry("700x500")
+                
+                # Text widget for warnings
+                text_widget = ctk.CTkTextbox(validation_window, wrap="word")
+                text_widget.pack(fill="both", expand=True, padx=20, pady=20)
+                text_widget.insert("1.0", warning_msg)
+                text_widget.configure(state="disabled")
+                
+                # Close button
+                close_btn = ctk.CTkButton(validation_window, text="Close", 
+                                        command=validation_window.destroy)
+                close_btn.pack(pady=10)
+                
+                # Make modal AFTER window is fully created
+                validation_window.transient(self)
+                validation_window.focus_set()
+                
+                self.status_label.configure(
+                    text=f"⚠️ Validation found {len(warnings)} potential issue(s) - review warnings!",
+                    text_color="orange")
+            else:
+                messagebox.showinfo("Validation Passed", 
+                    "✓ No inconsistencies detected!\n\nYour selection appears to be complete and consistent.")
+                self.status_label.configure(text="✓ Validation passed - no issues found",
+                                        text_color="green")
+        
+        def show_error(error_msg):
+            """Display error on main thread"""
+            if validate_btn:
+                validate_btn.configure(state="normal")
+            messagebox.showerror("Validation Error", f"Error during validation:\n{error_msg}")
+            self.status_label.configure(text="Validation error", text_color="red")
+        
+        # Start validation in background thread
+        thread = threading.Thread(target=validation_task, daemon=True)
+        thread.start()
+    
+    def process_failures(self):
+        """Process failed mutations with undo support"""
+        failed_variants = self.get_failed_mutations()
+        
+        if not failed_variants:
+            messagebox.showinfo("No Failures", "No failed mutations marked.")
+            return
+        
+        # Show confirmation dialog
+        summary = []
+        for variant_id, info in failed_variants.items():
+            summary.append(f"{variant_id}: {len(info['failed'])} failed mutation(s)")
+        
+        confirm_msg = "Found failures in the following variants:\n\n" + "\n".join(summary)
+        confirm_msg += "\n\nThis will:\n"
+        confirm_msg += "1. Update marked variants (remove failed mutations)\n"
+        confirm_msg += "2. Create new repair variants (with all mutations)\n"
+        confirm_msg += "3. Generate repair protocol\n\n"
+        confirm_msg += "⚠️ Only manually marked variants will be updated.\n"
+        confirm_msg += "Run 'Validate Selection' first to check for missed variants.\n\n"
+        confirm_msg += "Continue?"
+        
+        if not messagebox.askyesno("Confirm Processing", confirm_msg):
+            return
+        
+        try:
+            self.status_label.configure(text="Processing failures...", text_color="blue")
+            
+            # Load current databank and create undo backup
+            databank = self.controller.get_databank()
+            undo_backup = copy.deepcopy(databank)
+            
+            # Get next available variant number
+            output_dir = Path(self.controller.output_dir.get())
+            input_page = self.controller.frames[InputPage]
+            variant_prefix = input_page.var_prefix.get().strip()
+            
+            existing_ids = [int(v_id.replace(variant_prefix, ''))
+                          for v_id in databank.keys()
+                          if v_id.startswith(variant_prefix) and v_id.replace(variant_prefix, '').isdigit()]
+            next_id = max(existing_ids, default=0) + 1
+            
+            # Process each failed variant
+            repair_variants = []
+            updated_variants = []
+            updated_variant_ids = []
+            repair_variant_ids = []
+            
+            for variant_id, info in failed_variants.items():
+                # Update original variant (remove failed mutations)
+                present_muts_str = ','.join(info['present']) if info['present'] else '(none)'
+                databank[variant_id] = present_muts_str
+                updated_variants.append((variant_id, present_muts_str))
+                updated_variant_ids.append(variant_id)
+                
+                # Create repair variant for each failed mutation separately
+                for failed_mut in info['failed']:
+                    new_variant_id = f"{variant_prefix}{next_id:02d}"
+                    next_id += 1
+                    
+                    # New variant has all original mutations
+                    all_mutations = ','.join(info['original'])
+                    databank[new_variant_id] = all_mutations
+                    
+                    repair_variants.append({
+                        'new_id': new_variant_id,
+                        'parent_id': variant_id,
+                        'missing_mutation': failed_mut,
+                        'all_mutations': all_mutations
+                    })
+                    repair_variant_ids.append(new_variant_id)
+            
+            # Save undo state BEFORE saving changes
+            self.failure_undo_stack.append({
+                'databank': undo_backup,
+                'updated_ids': updated_variant_ids,
+                'repair_ids': repair_variant_ids
+            })
+            
+            # Keep only last 10 undo states
+            if len(self.failure_undo_stack) > 10:
+                self.failure_undo_stack.pop(0)
+            
+            # Save updated databank
+            self.controller.save_databank(databank)
+            
+            # Mark variants for highlighting
+            self.controller.mark_variants_modified(updated_variant_ids, repair_variant_ids)
+            
+            # Generate repair protocol
+            self.generate_repair_protocol(repair_variants, updated_variants, variant_prefix)
+            
+            # Refresh displays
+            self.load_variants()
+            if hasattr(self.controller, 'frames') and DatabankPage in self.controller.frames:
+                self.controller.frames[DatabankPage].refresh_variants()
+            
+            # Show success message
+            success_msg = f"Successfully processed:\n\n"
+            success_msg += f"• Updated {len(updated_variants)} variant(s) (highlighted in yellow)\n"
+            success_msg += f"• Created {len(repair_variants)} repair variant(s) (highlighted in green)\n\n"
+            success_msg += "Repair protocol saved to protocols/repair_protocol.pdf\n\n"
+            success_msg += "💡 Use 'Undo Last Processing' to revert these changes if needed."
+            
+            messagebox.showinfo("Success", success_msg)
+            self.status_label.configure(text=f"Processed {len(failed_variants)} variants with failures",
+                                       text_color="green")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to process mutations:\n{str(e)}")
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
+    
+    def generate_repair_protocol(self, repair_variants, updated_variants, variant_prefix):
+        """Generate PDF protocol for repairing failed mutations"""
+        output_dir = Path(self.controller.output_dir.get())
+        protocols_dir = output_dir / "protocols"
+        protocols_dir.mkdir(parents=True, exist_ok=True)
+        
+        pdf_path = protocols_dir / "repair_protocol.pdf"
+        
+        doc = SimpleDocTemplate(str(pdf_path), pagesize=A4)
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Title
+        title = Paragraph("<b>Mutation Repair Protocol</b>", styles['Heading1'])
+        elements.append(title)
+        elements.append(Spacer(1, 12))
+        
+        # Updated variants section
+        elements.append(Paragraph("<b>1. Updated Variants (Failed Mutations Removed)</b>", 
+                                 styles['Heading2']))
+        elements.append(Spacer(1, 12))
+        
+        updated_data = [['Variant ID', 'Updated Mutations']]
+        for variant_id, mutations in updated_variants:
+            updated_data.append([variant_id, mutations])
+        
+        updated_table = Table(updated_data, colWidths=[150, 350])
+        updated_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP')
+        ]))
+        elements.append(updated_table)
+        elements.append(Spacer(1, 20))
+        
+        # Repair variants section
+        elements.append(Paragraph("<b>2. Repair Mutagenesis Steps</b>", styles['Heading2']))
+        elements.append(Spacer(1, 12))
+        
+        repair_data = [['Step', 'New Variant', 'Parent Variant', 'Add Missing Mutation', 'Final Mutations']]
+        for i, repair in enumerate(repair_variants, start=1):
+            repair_data.append([
+                str(i),
+                repair['new_id'],
+                repair['parent_id'],
+                repair['missing_mutation'],
+                repair['all_mutations']
+            ])
+        
+        repair_table = Table(repair_data, colWidths=[40, 100, 100, 120, 150])
+        repair_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9)
+        ]))
+        elements.append(repair_table)
+        elements.append(Spacer(1, 20))
+        
+        # Instructions
+        elements.append(Paragraph("<b>Instructions:</b>", styles['Heading3']))
+        instructions = [
+            "1. Use the parent variant as template for mutagenesis",
+            "2. Add the missing mutation using appropriate primers",
+            "3. Verify the new variant contains all expected mutations",
+            "4. The new variant ID should contain the complete set of mutations"
+        ]
+        for instruction in instructions:
+            elements.append(Paragraph(instruction, styles['Normal']))
+        
+        # Build PDF
+        doc.build(elements)
+        
+        print(f"Repair protocol saved: {pdf_path}")
+
+class SLiCEDesignerPage(ctk.CTkFrame):
+    """SLiCE Primer Designer integrated into mutagenesis application"""
+    
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        
+        # Configure grid
+        self.grid_columnconfigure(0, weight=2)  # Viewer column
+        self.grid_columnconfigure(1, weight=1)  # Control column
+        self.grid_rowconfigure(1, weight=1)
+        
+        # State
+        self.sequence = ""
+        self.annotations = []
+        self.fragments = []
+        self.primers = []
+        self.designer = None
+        
+        self.setup_ui()
+        self.update_designer()
+    
+    def setup_ui(self):
+        # Header
+        header_frame = ctk.CTkFrame(self)
+        header_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=20)
+        header_frame.grid_columnconfigure(0, weight=1)
+        
+        title = ctk.CTkLabel(header_frame, text="SLiCE Assembly Designer",
+                            corner_radius=10, fg_color="#4a90e2",
+                            text_color="white", font=self.controller.LARGEFONT,
+                            height=50)
+        title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        
+        back_btn = ctk.CTkButton(header_frame, text="Back to Input",
+                                command=lambda: self.controller.show_frame(InputPage))
+        back_btn.grid(row=0, column=1, padx=10, pady=10, sticky="e")
+        
+        # Left: Sequence viewer
+        self.create_sequence_viewer()
+        
+        # Right: Controls and results
+        self.create_control_panel()
+    
+    def create_sequence_viewer(self):
+        """Create the sequence viewing area"""
+        viewer_frame = ctk.CTkFrame(self)
+        viewer_frame.grid(row=1, column=0, sticky="nsew", padx=(10, 5), pady=10)
+        viewer_frame.grid_columnconfigure(0, weight=1)
+        viewer_frame.grid_rowconfigure(2, weight=1)
+        
+        # Title and load button
+        title_frame = ctk.CTkFrame(viewer_frame)
+        title_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        title_frame.grid_columnconfigure(0, weight=1)
+        
+        ctk.CTkLabel(title_frame, text="Plasmid Sequence",
+                    font=self.controller.MEDIUMFONT).grid(row=0, column=0, sticky="w")
+        
+        load_btn = ctk.CTkButton(title_frame, text="Load Plasmid File",
+                                command=self.load_plasmid)
+        load_btn.grid(row=0, column=1, padx=5)
+        
+        use_wt_btn = ctk.CTkButton(title_frame, text="Use WT Sequence",
+                                   command=self.use_wildtype_sequence)
+        use_wt_btn.grid(row=0, column=2, padx=5)
+        
+        # Info bar
+        info_frame = ctk.CTkFrame(viewer_frame)
+        info_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        
+        self.seq_info_label = ctk.CTkLabel(info_frame, text="No sequence loaded",
+                                          font=self.controller.SMALLFONT)
+        self.seq_info_label.pack(side="left", padx=10)
+        
+        self.selection_label = ctk.CTkLabel(info_frame, text="Selection: None",
+                                           font=self.controller.SMALLFONT)
+        self.selection_label.pack(side="left", padx=20)
+        
+        # Sequence display
+        self.seq_text = ctk.CTkTextbox(viewer_frame, wrap="char",
+                                      font=ctk.CTkFont(family="Courier", size=10))
+        self.seq_text.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        
+        # Configure text tags for highlighting
+        self.seq_text.tag_config("selected", background="#ADD8E6", foreground="black")
+        self.seq_text.tag_config("fragment", background="#90EE90", foreground="black")
+        
+        # Selection controls
+        select_frame = ctk.CTkFrame(viewer_frame)
+        select_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
+        
+        ctk.CTkLabel(select_frame, text="Select Fragment:",
+                    font=self.controller.SMALLFONT).grid(row=0, column=0, padx=5)
+        
+        ctk.CTkLabel(select_frame, text="Start:").grid(row=0, column=1, padx=5)
+        self.start_entry = ctk.CTkEntry(select_frame, width=80, placeholder_text="1")
+        self.start_entry.grid(row=0, column=2, padx=5)
+        
+        ctk.CTkLabel(select_frame, text="End:").grid(row=0, column=3, padx=5)
+        self.end_entry = ctk.CTkEntry(select_frame, width=80, placeholder_text="100")
+        self.end_entry.grid(row=0, column=4, padx=5)
+        
+        add_btn = ctk.CTkButton(select_frame, text="Add Fragment",
+                               command=self.add_fragment_manual, fg_color="green")
+        add_btn.grid(row=0, column=5, padx=10)
+    
+    def create_control_panel(self):
+        """Create the control panel on the right"""
+        control_frame = ctk.CTkFrame(self)
+        control_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 10), pady=10)
+        control_frame.grid_columnconfigure(0, weight=1)
+        control_frame.grid_rowconfigure(2, weight=1)
+        control_frame.grid_rowconfigure(4, weight=2)
+        
+        # Parameters
+        self.create_parameters_section(control_frame)
+        
+        # Fragment list
+        self.create_fragment_list(control_frame)
+        
+        # Action buttons
+        action_frame = ctk.CTkFrame(control_frame)
+        action_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
+        
+        design_btn = ctk.CTkButton(action_frame, text="Design Primers",
+                                   command=self.design_primers,
+                                   font=self.controller.MEDIUMFONT,
+                                   fg_color="blue", height=40)
+        design_btn.pack(fill="x", pady=5)
+        
+        validate_btn = ctk.CTkButton(action_frame, text="Validate Assembly",
+                                     command=self.validate_assembly)
+        validate_btn.pack(fill="x", pady=5)
+        
+        clear_btn = ctk.CTkButton(action_frame, text="Clear All Fragments",
+                                 command=self.clear_fragments)
+        clear_btn.pack(fill="x", pady=5)
+        
+        # Results
+        ctk.CTkLabel(control_frame, text="Primer Results",
+                    font=self.controller.MEDIUMFONT).grid(row=4, column=0, sticky="nw", padx=10, pady=(10, 5))
+        
+        self.results_text = ctk.CTkTextbox(control_frame,
+                                          font=ctk.CTkFont(family="Courier", size=9))
+        self.results_text.grid(row=4, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        
+        # Export
+        export_btn = ctk.CTkButton(control_frame, text="Export Primers to CSV",
+                                   command=self.export_primers)
+        export_btn.grid(row=5, column=0, sticky="ew", padx=10, pady=10)
+        
+        # Status
+        self.status_label = ctk.CTkLabel(control_frame, text="",
+                                        font=self.controller.SMALLFONT)
+        self.status_label.grid(row=6, column=0, sticky="w", padx=10, pady=5)
+    
+    def create_parameters_section(self, parent):
+        """Create parameter inputs"""
+        param_frame = ctk.CTkFrame(parent)
+        param_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        param_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(param_frame, text="Design Parameters",
+                    font=self.controller.MEDIUMFONT).grid(row=0, column=0, columnspan=3, pady=10)
+        
+        # Overlap length
+        ctk.CTkLabel(param_frame, text="Overlap (bp):", font=self.controller.SMALLFONT).grid(
+            row=1, column=0, sticky="w", padx=5, pady=2)
+        
+        overlap_frame = ctk.CTkFrame(param_frame)
+        overlap_frame.grid(row=1, column=1, columnspan=2, sticky="w", padx=5)
+        
+        self.overlap_min = ctk.CTkEntry(overlap_frame, width=50)
+        self.overlap_min.insert(0, "15")
+        self.overlap_min.pack(side="left", padx=2)
+        
+        ctk.CTkLabel(overlap_frame, text="-").pack(side="left", padx=2)
+        
+        self.overlap_max = ctk.CTkEntry(overlap_frame, width=50)
+        self.overlap_max.insert(0, "25")
+        self.overlap_max.pack(side="left", padx=2)
+        
+        # Overlap Tm
+        ctk.CTkLabel(param_frame, text="Overlap Tm (°C):", font=self.controller.SMALLFONT).grid(
+            row=2, column=0, sticky="w", padx=5, pady=2)
+        
+        tm_frame = ctk.CTkFrame(param_frame)
+        tm_frame.grid(row=2, column=1, columnspan=2, sticky="w", padx=5)
+        
+        self.tm_min = ctk.CTkEntry(tm_frame, width=50)
+        self.tm_min.insert(0, "55")
+        self.tm_min.pack(side="left", padx=2)
+        
+        ctk.CTkLabel(tm_frame, text="-").pack(side="left", padx=2)
+        
+        self.tm_max = ctk.CTkEntry(tm_frame, width=50)
+        self.tm_max.insert(0, "65")
+        self.tm_max.pack(side="left", padx=2)
+        
+        # Primer Tm
+        ctk.CTkLabel(param_frame, text="Primer Tm (°C):", font=self.controller.SMALLFONT).grid(
+            row=3, column=0, sticky="w", padx=5, pady=2)
+        
+        self.primer_tm = ctk.CTkEntry(param_frame, width=50)
+        self.primer_tm.insert(0, "60")
+        self.primer_tm.grid(row=3, column=1, sticky="w", padx=5)
+        
+        # Circular
+        self.circular_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(param_frame, text="Circular", variable=self.circular_var,
+                       font=self.controller.SMALLFONT).grid(row=4, column=0, columnspan=2, sticky="w", padx=5, pady=5)
+        
+        # Update button
+        update_btn = ctk.CTkButton(param_frame, text="Update",
+                                   command=self.update_designer, width=100)
+        update_btn.grid(row=5, column=0, columnspan=3, pady=10)
+    
+    def create_fragment_list(self, parent):
+        """Create fragment list display"""
+        list_frame = ctk.CTkFrame(parent)
+        list_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        list_frame.grid_columnconfigure(0, weight=1)
+        list_frame.grid_rowconfigure(1, weight=1)
+        
+        ctk.CTkLabel(list_frame, text="Fragments",
+                    font=self.controller.MEDIUMFONT).grid(row=0, column=0, pady=5)
+        
+        self.fragment_list = ctk.CTkTextbox(list_frame, height=120,
+                                           font=self.controller.SMALLFONT)
+        self.fragment_list.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.fragment_list.configure(state="disabled")
+    
+    def update_designer(self):
+        """Update designer with current parameters"""
+        try:
+            overlap_min = int(self.overlap_min.get())
+            overlap_max = int(self.overlap_max.get())
+            tm_min = int(self.tm_min.get())
+            tm_max = int(self.tm_max.get())
+            primer_tm = float(self.primer_tm.get())
+            
+            self.designer = SLiCEPrimerDesigner(
+                overlap_length_range=(overlap_min, overlap_max),
+                overlap_tm_range=(tm_min, tm_max),
+                primer_tm_target=primer_tm
+            )
+            
+            self.status_label.configure(text="Parameters updated", text_color="green")
+        except ValueError as e:
+            self.status_label.configure(text=f"Invalid parameters: {e}", text_color="red")
+    
+    def load_plasmid(self):
+        """Load plasmid from file"""
+        file_path = filedialog.askopenfilename(
+            title="Select Plasmid File",
+            filetypes=[
+                ("FASTA files", "*.fasta *.fa *.fna"),
+                ("GenBank files", "*.gb *.gbk"),
+                ("Text files", "*.txt"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            sequence = self.read_sequence_file(file_path)
+            self.load_sequence(sequence)
+            self.status_label.configure(text=f"Loaded: {len(sequence)} bp", text_color="green")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load file:\n{e}")
+    
+    def use_wildtype_sequence(self):
+        """Use wildtype sequence from input page"""
+        try:
+            input_page = self.controller.frames[InputPage]
+            wt_seq = input_page.get_dna_sequence()
+            
+            if not wt_seq:
+                messagebox.showwarning("No Sequence", "No wildtype sequence found in Input page.")
+                return
+            
+            self.load_sequence(wt_seq)
+            self.status_label.configure(text=f"Loaded WT: {len(wt_seq)} bp", text_color="green")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load WT sequence:\n{e}")
+    
+    def read_sequence_file(self, file_path: str) -> str:
+        """Read sequence from file"""
+        with open(file_path, 'r') as f:
+            content = f.read()
+        
+        # Simple FASTA parser
+        if content.startswith('>'):
+            lines = content.split('\n')
+            sequence = ''.join(line.strip() for line in lines[1:] if not line.startswith('>'))
+        else:
+            sequence = ''.join(content.split())
+        
+        # Clean: only DNA bases
+        sequence = re.sub(r'[^ATGCatgc]', '', sequence)
+        return sequence.upper()
+    
+    def load_sequence(self, sequence: str):
+        """Load sequence into viewer"""
+        self.sequence = sequence.upper()
+        self.annotations = PlasmidAnnotator.annotate_sequence(self.sequence)
+        
+        # Update info
+        self.seq_info_label.configure(
+            text=f"Sequence: {len(self.sequence)} bp | Annotations: {len(self.annotations)}"
+        )
+        
+        # Display
+        self.display_sequence()
+    
+    def display_sequence(self):
+        """Display sequence with formatting"""
+        self.seq_text.delete("1.0", "end")
+        
+        # Format: 60 bp per line
+        for i in range(0, len(self.sequence), 60):
+            chunk = self.sequence[i:i+60]
+            formatted = ' '.join([chunk[j:j+10] for j in range(0, len(chunk), 10)])
+            self.seq_text.insert("end", f"{i+1:>6}: {formatted}\n")
+        
+        # Highlight fragments
+        self.highlight_fragments()
+    
+    def highlight_fragments(self):
+        """Highlight defined fragments"""
+        # Clear previous highlights
+        self.seq_text.tag_remove("fragment", "1.0", "end")
+        
+        # Add new highlights (simplified - would need proper index calculation)
+        for frag in self.fragments:
+            # This is simplified - production needs proper text index calculation
+            pass
+    
+    def add_fragment_manual(self):
+        """Add fragment using manual start/end input"""
+        if not self.sequence:
+            messagebox.showwarning("No Sequence", "Please load a sequence first.")
+            return
+        
+        try:
+            start = int(self.start_entry.get()) - 1  # Convert to 0-based
+            end = int(self.end_entry.get())
+            
+            if start < 0 or end > len(self.sequence) or start >= end:
+                raise ValueError("Invalid range")
+            
+            # Get name
+            name = ctk.CTkInputDialog(
+                text=f"Enter fragment name ({start+1}-{end}, {end-start} bp):",
+                title="Fragment Name"
+            ).get_input()
+            
+            if not name:
+                return
+            
+            # Create fragment
+            fragment = SLiCEFragment(
+                name=name,
+                start=start,
+                end=end,
+                sequence=self.sequence[start:end]
+            )
+            
+            self.fragments.append(fragment)
+            self.update_fragment_list()
+            self.highlight_fragments()
+            
+            self.status_label.configure(text=f"Added fragment: {name}", text_color="green")
+            
+        except ValueError as e:
+            messagebox.showerror("Invalid Input", "Please enter valid start and end positions.")
+    
+    def update_fragment_list(self):
+        """Update fragment list display"""
+        self.fragment_list.configure(state="normal")
+        self.fragment_list.delete("1.0", "end")
+        
+        if not self.fragments:
+            self.fragment_list.insert("1.0", "No fragments defined")
+        else:
+            for i, frag in enumerate(self.fragments, 1):
+                self.fragment_list.insert("end",
+                    f"{i}. {frag.name}\n"
+                    f"   {frag.start+1}-{frag.end} ({len(frag.sequence)} bp)\n\n"
+                )
+        
+        self.fragment_list.configure(state="disabled")
+    
+    def clear_fragments(self):
+        """Clear all fragments"""
+        if self.fragments and messagebox.askyesno("Confirm", "Clear all fragments?"):
+            self.fragments.clear()
+            self.update_fragment_list()
+            self.display_sequence()
+            self.status_label.configure(text="Fragments cleared", text_color="blue")
+    
+    def design_primers(self):
+        """Design primers for fragments"""
+        if not self.fragments:
+            messagebox.showwarning("No Fragments", "Please define fragments first.")
+            return
+        
+        if not self.designer:
+            self.update_designer()
+        
+        try:
+            self.primers = self.designer.design_primers_for_fragments(
+                self.fragments,
+                circular=self.circular_var.get()
+            )
+            
+            self.display_results()
+            self.status_label.configure(
+                text=f"Designed {len(self.primers)} primers", text_color="green")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Primer design failed:\n{e}")
+    
+    def display_results(self):
+        """Display primer results"""
+        self.results_text.delete("1.0", "end")
+        
+        if not self.primers:
+            self.results_text.insert("1.0", "No primers designed")
+            return
+        
+        # Group by fragment
+        by_fragment = {}
+        for p in self.primers:
+            if p.fragment_name not in by_fragment:
+                by_fragment[p.fragment_name] = []
+            by_fragment[p.fragment_name].append(p)
+        
+        for frag_name, prims in by_fragment.items():
+            self.results_text.insert("end", f"=== {frag_name} ===\n")
+            for p in prims:
+                dir_text = "Fwd" if p.is_forward else "Rev"
+                self.results_text.insert("end", f"{p.name} ({dir_text}):\n")
+                self.results_text.insert("end", f"  {p.sequence}\n")
+                self.results_text.insert("end", f"  {p.length}bp, Tm:{p.tm:.1f}°C")
+                if p.overlap_length > 0:
+                    self.results_text.insert("end", f", Ovl:{p.overlap_length}bp")
+                self.results_text.insert("end", "\n\n")
+    
+    def validate_assembly(self):
+        """Validate assembly design"""
+        if not self.fragments:
+            messagebox.showwarning("No Fragments", "Please define fragments first.")
+            return
+        
+        validation = self.designer.validate_assembly(
+            self.fragments, circular=self.circular_var.get()
+        )
+        
+        if validation['valid']:
+            messagebox.showinfo("Valid",
+                f"✓ Assembly is valid!\n\n"
+                f"Fragments: {validation['total_fragments']}\n"
+                f"Total: {validation['total_length']} bp")
+        else:
+            issues = '\n'.join(f"• {i}" for i in validation['issues'])
+            messagebox.showwarning("Issues", f"⚠ Problems found:\n\n{issues}")
+    
+    def export_primers(self):
+        """Export primers to CSV"""
+        if not self.primers:
+            messagebox.showwarning("No Primers", "Design primers first.")
+            return
+        
+        file_path = filedialog.asksaveasfilename(
+            title="Save Primers",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            try:
+                self.designer.export_primers_to_csv(self.primers, file_path)
+                messagebox.showinfo("Success", f"Exported to:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Export failed:\n{e}")
 
 if __name__ == "__main__":
     app = MutagenesisApp()
