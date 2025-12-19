@@ -3299,6 +3299,58 @@ class AddVariantsWindow:
                 'mutations_entry': mutations_entry
             })
 
+    def validate_mutations(self, mutation_string):
+        """
+        Validate mutation format
+        Returns (is_valid, error_message)
+        """
+        if not mutation_string or mutation_string.strip() == "":
+            return False, "Mutation string is empty"
+        
+        # Split by comma and check each mutation
+        mutations = [m.strip() for m in mutation_string.split(',') if m.strip()]
+        
+        if not mutations:
+            return False, "No valid mutations found"
+        
+        # Pattern: Single letter, number(s), single letter (e.g., S19V, K3Q)
+        mutation_pattern = re.compile(r"^[ACDEFGHIKLMNPQRSTVWY]\d+[ACDEFGHIKLMNPQRSTVWY]$")
+        
+        for mut in mutations:
+            if not mutation_pattern.match(mut):
+                return False, f"Invalid mutation format: '{mut}'. Expected format: e.g., S19V, K3Q"
+        
+        # Check for duplicates within this variant
+        if len(mutations) != len(set(mutations)):
+            duplicates = [m for m in mutations if mutations.count(m) > 1]
+            return False, f"Duplicate mutation(s) found: {', '.join(set(duplicates))}"
+        
+        return True, ""
+
+
+    def get_next_available_number(self):
+        """Get the next available variant number based on prefix"""
+        prefix = self.prefix_var.get().strip()
+        databank = self.parent.controller.get_databank()
+        
+        # Extract all numbers from existing variants with this prefix
+        existing_numbers = []
+        for variant_id in databank.keys():
+            if variant_id.startswith(prefix):
+                # Extract the number part
+                number_part = variant_id.replace(prefix, '')
+                if number_part.isdigit():
+                    existing_numbers.append(int(number_part))
+        
+        # Return next available number (default to 1 if none exist)
+        return max(existing_numbers, default=0) + 1
+
+
+    def add_more_rows(self):
+        """Add 10 more empty rows to the table"""
+        self.create_variant_rows(10)
+        self.status_label.configure(text="Added 10 more rows")
+
     def clear_all_entries(self):
         """Clear all entry fields"""
         for entry_dict in self.variant_entries:
