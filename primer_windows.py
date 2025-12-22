@@ -52,6 +52,20 @@ AMINO_ACID_MAP = {
     '*': 'Ter', 'X': 'Xxx'
 }
 
+def natural_sort_key(text):
+    """
+    Natural sorting key function for alphanumeric strings.
+    Converts 'KWE_TA_A10' to ['KWE_TA_A', 10] for proper sorting.
+    
+    Examples:
+        ['KWE_TA_A9', 'KWE_TA_A10', 'KWE_TA_A100'] 
+        -> sorted correctly as 9, 10, 100 (not 10, 100, 9)
+    """
+    def atoi(text):
+        return int(text) if text.isdigit() else text.lower()
+    
+    return [atoi(c) for c in re.split(r'(\d+)', text)]
+
 # Utility Functions
 def translate_dna_to_protein(dna_sequence):
     """Translate DNA sequence to protein sequence"""
@@ -3070,7 +3084,7 @@ class DatabankPage(ctk.CTkFrame):
         self.results_label.configure(text=result_text)
 
         # Create checkboxes for filtered variants with highlighting
-        for var_id, muts in sorted(self.filtered_variants.items()):
+        for var_id, muts in sorted(self.filtered_variants.items(), key=lambda x: natural_sort_key(x[0])):
             var_text = f"{var_id}: {muts if muts != '(none)' else 'no mutations'}"
             
             # Determine highlight color
@@ -5495,7 +5509,7 @@ class MutationFailureHandler(ctk.CTkFrame):
         
         # Store all variants (excluding wildtype and empty)
         self.all_variants = {}
-        for variant_id in sorted(databank.keys()):
+        for variant_id in sorted(databank.keys(), key=natural_sort_key):
             mutation_str = databank[variant_id]
             
             # Skip wildtype or variants with no mutations
@@ -5651,7 +5665,7 @@ class MutationFailureHandler(ctk.CTkFrame):
         
         # Create rows for each filtered variant (optimized)
         row_num = 1
-        sorted_variants = sorted(self.filtered_variants.keys())
+        sorted_variants = sorted(self.filtered_variants.keys(), key=natural_sort_key)
         
         for variant_id in sorted_variants:
             mutation_str = self.filtered_variants[variant_id]
