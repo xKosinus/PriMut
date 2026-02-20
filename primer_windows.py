@@ -1066,7 +1066,12 @@ class MutagenesisProtocol:
         used_variants = {}
         existing_input_variants = {}
 
-        existing_ids = [int(v_id[-2:]) for v_id in variant_databank if v_id.startswith(self.variant_prefix)]
+        existing_ids = [
+            int(v_id[len(self.variant_prefix):])
+            for v_id in variant_databank
+            if v_id.startswith(self.variant_prefix)
+            and v_id[len(self.variant_prefix):].isdigit()
+        ]
         next_id_num = max(existing_ids, default=0) + 1
         for muts, name in existing_variants.items():
             mutation_str = ','.join(sorted(muts, key=mutation_position))
@@ -5816,9 +5821,12 @@ class MutationFailureHandler(ctk.CTkFrame):
             input_page = self.controller.frames[InputPage]
             variant_prefix = input_page.var_prefix.get().strip()
             
-            existing_ids = [int(v_id.replace(variant_prefix, ''))
-                          for v_id in databank.keys()
-                          if v_id.startswith(variant_prefix) and v_id.replace(variant_prefix, '').isdigit()]
+            existing_ids = [
+                int(v_id[len(variant_prefix):])
+                for v_id in databank.keys()
+                if v_id.startswith(variant_prefix)
+                and v_id[len(variant_prefix):].isdigit()
+            ]
             next_id = max(existing_ids, default=0) + 1
             
             # Process each failed variant
