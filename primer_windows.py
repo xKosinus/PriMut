@@ -1098,6 +1098,11 @@ class MutagenesisProtocol:
                     for muts, name in planning_variants.items():
                         if variant_key_str == self.variant_key(muts):
                             existing_input_variants[variant_label] = name
+                            variant_to_label_map[variant_label] = target
+                            variant_to_final_variant[variant_label] = name
+                            used_variants[tuple(sorted(
+                                map(self.normalize_mut, target), key=mutation_position
+                            ))] = name
                             break
                     continue
                 else:
