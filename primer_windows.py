@@ -176,26 +176,24 @@ class PrimerGenerator:
         """Validate DNA sequence structure and reading frame."""
         if len(dna_sequence) % 3 != 0:
             print(f"Error: Sequence length {len(dna_sequence)} is not a multiple of 3.")
-            return False
+            return False, None
 
         if len(dna_sequence) < (flank_size * 2 + 6):
             print("Error: Sequence too short for flanking regions.")
-            return False
+            return False, None
 
         # Check start codon
-        start_codon_pos = dna_sequence[flank_size:flank_size + 3]
-        if start_codon_pos != "ATG":
-            print(f"Error: No ATG start codon after first {flank_size} bases, found '{start_codon_pos}'.")
-            return False
+        start_codon = dna_sequence[flank_size:flank_size + 3]
+        first_aa = GENETIC_CODE.get(start_codon, 'X')
 
         # Check stop codon
         stop_codon_pos = dna_sequence[-(flank_size + 3):-flank_size]
         if stop_codon_pos not in self.stop_codons:
             print(f"Error: No valid stop codon before last {flank_size} bases, found '{stop_codon_pos}'.")
-            return False
+            return False, None
 
-        print("Sequence check passed: correct ATG start and stop codon positions.")
-        return True
+        print(f"Sequence check passed. First codon: {start_codon} ({first_aa})")
+        return True, (start_codon, first_aa)
 
     def validate_mutations_against_sequence(self, dna_sequence, variant_list):
         """Validate mutations against wildtype sequence."""
@@ -903,7 +901,7 @@ class MutagenesisProtocol:
         }
         
         # Final variants overview
-        for label in sorted(variant_to_label_map, key=self.extract_variant_number):
+        for label in sorted(variant_to_label_map, key=natural_sort_key):
             sorted_mutations = sorted(variant_to_label_map[label], key=mutation_position)
             protocol_data["final_variants_overview"][label] = {
                 "final_variant": variant_to_final_variant[label],
@@ -969,7 +967,7 @@ class MutagenesisProtocol:
 
         elements.append(Paragraph("<b>Final Variants Overview</b>", styles['Heading2']))
         final_table_data = [['Final Variant', 'Mutations']]
-        for label in sorted(variant_to_label_map, key=self.extract_variant_number):
+        for label in sorted(variant_to_label_map, key=natural_sort_key):
             sorted_mutations = sorted(variant_to_label_map[label], key=mutation_position)
             mut_paragraph = Paragraph(', '.join(sorted_mutations), cell_style)
             final_table_data.append([variant_to_final_variant[label], mut_paragraph])
@@ -1910,6 +1908,21 @@ class InputPage(ctk.CTkFrame):
         self.create_action_buttons()
         self.create_status_section()
 
+        self.after(200, self._restore_last_sequence)
+
+    def _restore_last_sequence(self):
+        """Restore the last used DNA sequence from config"""
+        last_seq = self.controller.config_manager.get('last_dna_sequence', '')
+        if last_seq:
+            self.seq_text._clear_placeholder()
+            self.seq_text.delete("1.0", "end")
+            self.seq_text.insert("1.0", last_seq)
+            self.seq_text.configure(text_color="white")
+            self.status_label.configure(
+                text="Last used DNA sequence restored", 
+                text_color="gray"
+            )
+
     def create_title_section(self):
         title = ctk.CTkLabel(self, text="Mutagenesis Input", corner_radius=10,
                              fg_color="#4a90e2", text_color="white", 
@@ -2238,11 +2251,11 @@ class InputPage(ctk.CTkFrame):
     def run_workflow(self):
         self.status_label.configure(text="Running workflow...", text_color="blue")
 
-        # Add validation early here
         if not self.validate_inputs():
             return
         
         seq = self.get_dna_sequence()
+        self.controller.config_manager.set('last_dna_sequence', seq)
         variants_raw = self.var_text.get("1.0", "end").strip().split('\n')
         variant_list = [list(map(str.strip, line.split(','))) for line in variants_raw if line]
         max_mutations = self.max_mut_var.get()
@@ -2250,6 +2263,30 @@ class InputPage(ctk.CTkFrame):
         skip_db = self.skip_db.get()
 
         output_dir = Path(self.controller.output_dir.get())
+
+        # Primer design
+        try:
+            pg = PrimerGenerator(flank_size_bases=30)
+            valid, codon_info = pg.check_sequence_validity(seq, flank_size=30)
+            if not valid:
+                self.status_label.configure(text="Sequence failed validation", text_color="red")
+                return
+            
+            # Show first codon popup for user to verify
+            if codon_info:
+                start_codon, first_aa = codon_info
+                messagebox.showinfo(
+                    "First Codon Check",
+                    f"First codon after the 30bp flanking region:\n\n"
+                    f"  Codon: {start_codon}\n"
+                    f"  Amino acid: {first_aa} ({AMINO_ACID_MAP.get(first_aa, 'Unknown')})\n\n"
+                    f"Please verify this is the correct start of your coding sequence."
+                )
+            
+            pg.validate_mutations_against_sequence(seq, variant_list)
+        except Exception as e:
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
+            return
 
         # Primer design
         try:
@@ -2341,7 +2378,7 @@ class InputPage(ctk.CTkFrame):
             muts = [m.strip() for m in line.split(',') if m.strip()]
             mutations.append(muts)
 
-        # DNA Sequence checks (same as before)...
+        # DNA Sequence checks
         if not dna_seq:
             messagebox.showerror("Input Error", "DNA sequence is empty. Please enter a valid sequence.")
             return False
@@ -2354,13 +2391,17 @@ class InputPage(ctk.CTkFrame):
         if len(dna_seq) < 66:
             messagebox.showerror("Input Error", "DNA sequence is too short for required flanking regions (minimum 66 bases).")
             return False
-        if dna_seq[30:33] != "ATG":
-            messagebox.showerror("Input Error", f"Expected start codon ATG at bases 31-33, found '{dna_seq[30:33]}'.")
-            return False
         stop_codon = dna_seq[-33:-30]
         if stop_codon not in {"TAA", "TAG", "TGA"}:
             messagebox.showerror("Input Error", f"Expected stop codon TAA, TAG or TGA before last 30 bases, found '{stop_codon}'.")
             return False
+        
+        first_codon = dna_seq[30:33]
+        first_aa = GENETIC_CODE.get(first_codon, 'X')
+        self.status_label.configure(
+            text=f"First codon after flanking region: {first_codon} ({first_aa}) — please verify this is correct",
+            text_color="orange"
+        )
 
         # Mutation validations per variant
         if not mutations:
@@ -2663,7 +2704,7 @@ class VariantProteinPage(ctk.CTkFrame, BaseProteinPage):
         if not variant_proteins:
             return "No variant sequences to display."
         lines = []
-        for var_id, data in sorted(variant_proteins.items()):
+        for var_id, data in sorted(variant_proteins.items(), key=lambda x: natural_sort_key(x[0])):
             header = f">{var_id}|Mutations={data['mutations']}|Length={data['length']}aa"
             lines.append(header)
             seq = data['protein']
@@ -3692,7 +3733,7 @@ class VariantEditorWindow:
             return
 
         # Create rows for filtered variants
-        for i, (var_id, mutations) in enumerate(sorted(self.filtered_variants.items())):
+        for i, (var_id, mutations) in enumerate(sorted(self.filtered_variants.items(), key=lambda x: natural_sort_key(x[0]))):
             # Label (read-only)
             label = ctk.CTkLabel(self.variant_scroll, text=f"{var_id}:", 
                                font=self.controller.MEDIUMFONT)
@@ -3954,7 +3995,7 @@ class ProtocolResultsPage(ctk.CTkFrame):
         self.results_text.insert("end", "\nALL VARIANTS IN PROTOCOL DATA:\n")
         self.results_text.insert("end", "=" * 80 + "\n")
 
-        for variant, muts in sorted(all_variants.items()):
+        for variant, muts in sorted(all_variants.items(), key=lambda x: natural_sort_key(x[0])):
             self.results_text.insert("end", f"{variant:<15} | {muts}\n")
 
         self.results_text.insert("end", f"\nTotal variants: {len(all_variants)}\n")
@@ -3984,7 +4025,6 @@ class PrimerEditorWindow:
         self.wt_sequence = self.get_wildtype_sequence()
         
         self.setup_ui()
-        self.load_primer(0)
         
         # Grab focus after setup
         self.window.after(100, self.window.grab_set)
@@ -4202,12 +4242,16 @@ class PrimerEditorWindow:
                                  command=self.reset_current_primer)
         reset_btn.grid(row=1, column=0, padx=10, pady=10)
         
-        save_btn = ctk.CTkButton(button_frame, text="Save All Changes", 
-                                command=self.save_all_changes, fg_color="green")
-        save_btn.grid(row=1, column=1, padx=10, pady=10)
+        apply_btn = ctk.CTkButton(button_frame, text="Apply Changes", 
+                                command=self.apply_changes, fg_color="green")
+        apply_btn.grid(row=1, column=1, padx=10, pady=10)
         
-        cancel_btn = ctk.CTkButton(button_frame, text="Cancel", command=self.window.destroy)
+        cancel_btn = ctk.CTkButton(button_frame, text="Close", 
+                                command=self.close_editor)
         cancel_btn.grid(row=1, column=2, padx=10, pady=10)
+
+        self.window.update_idletasks()
+        self.load_primer(0)
     
     def load_primer(self, index):
         """Load primer at given index"""
@@ -4267,8 +4311,36 @@ class PrimerEditorWindow:
             self.right_next_base_label.configure(text="Next: N/A")
             self.right_plus_btn.configure(state="disabled")
     
+    def find_overlap_sequence(self, fwd_seq: str, rev_seq: str) -> str:
+        """
+        Find the overlap region shared between forward and reverse primers.
+        The overlap is the suffix of fwd that matches the reverse complement
+        of the suffix of rev (since rev primer starts with RC of overlap).
+        """
+        if not fwd_seq or not rev_seq:
+            return ""
+        
+        # The forward primer starts with the overlap sequence.
+        # The reverse primer starts with the RC of the overlap sequence.
+        # So: RC(rev_prefix) should match fwd_prefix for some length.
+        
+        best_overlap = ""
+        max_len = min(len(fwd_seq), len(rev_seq))
+        
+        for length in range(max_len, 4, -1):  # Try from longest to shortest, min 5bp
+            fwd_prefix = fwd_seq[:length]
+            rev_prefix = rev_seq[:length]
+            rev_prefix_rc = self.reverse_complement(rev_prefix)
+            
+            if fwd_prefix.upper() == rev_prefix_rc.upper():
+                best_overlap = fwd_prefix
+                break
+        
+        return best_overlap
+
+
     def update_primer_info(self):
-        """Update Tm and length display"""
+        """Update Tm, overlap Tm and length display"""
         sequence = self.get_current_sequence()
         length = len(sequence)
         tm = self.calculate_tm(sequence)
@@ -4276,10 +4348,51 @@ class PrimerEditorWindow:
         self.length_label.configure(text=f"{length} bp")
         self.tm_label.configure(text=f"{tm} C")
         
-        # Update stored data
+        # Update stored sequence/Tm/length
         self.primer_data[self.current_index]["Primer Sequence"] = sequence
         self.primer_data[self.current_index]["Length"] = str(length)
         self.primer_data[self.current_index]["Tm (C)"] = str(tm)
+        
+        # --- Recalculate overlap Tm ---
+        # Find the paired primer (fwd <-> rev are always adjacent pairs in the list)
+        idx = self.current_index
+        if idx % 2 == 0:
+            # Current is forward (even index), paired reverse is idx+1
+            paired_idx = idx + 1
+        else:
+            # Current is reverse (odd index), paired forward is idx-1
+            paired_idx = idx - 1
+        
+        if 0 <= paired_idx < len(self.primer_data):
+            paired_seq = self.primer_data[paired_idx].get("Primer Sequence", "")
+            
+            # Get fwd and rev sequences
+            if idx % 2 == 0:
+                fwd_seq, rev_seq = sequence, paired_seq
+            else:
+                fwd_seq, rev_seq = paired_seq, sequence
+            
+            overlap_seq = self.find_overlap_sequence(fwd_seq, rev_seq)
+            
+            if overlap_seq:
+                overlap_tm = self.calculate_tm(overlap_seq)
+                overlap_len = len(overlap_seq)
+                
+                # Update both primers in the pair with the new overlap info
+                for i in [idx, paired_idx]:
+                    self.primer_data[i]["Overlap Tm"] = str(overlap_tm)
+                    self.primer_data[i]["Overlap Length"] = str(overlap_len)
+                    self.primer_data[i]["Overlap GC (%)"] = str(
+                        round((overlap_seq.upper().count('G') + overlap_seq.upper().count('C')) 
+                            / len(overlap_seq) * 100, 1)
+                    )
+                
+                # Update the overlap Tm label if it exists
+                if hasattr(self, 'overlap_tm_label'):
+                    self.overlap_tm_label.configure(text=f"Overlap Tm: {overlap_tm} C  |  {overlap_len} bp")
+            else:
+                if hasattr(self, 'overlap_tm_label'):
+                    self.overlap_tm_label.configure(text="Overlap Tm: N/A (no overlap found)")
         
         # Update next base labels
         self.update_next_base_labels()
@@ -4384,45 +4497,29 @@ class PrimerEditorWindow:
         if self.current_index < len(self.primer_data) - 1:
             self.load_primer(self.current_index + 1)
     
-    def save_all_changes(self):
-        """Save all modified primers back to CSV"""
+    def apply_changes(self):
+        """Save changes to primer_temp.csv"""
         if not self.modified:
-            messagebox.showinfo("No Changes", "No modifications were made.")
-            return
-        
-        confirm = messagebox.askyesno("Confirm Save", 
-                                      "Save all changes to primer_list.csv?\n\nThis will overwrite the existing file.")
-        if not confirm:
+            self.status_label.configure(text="No modifications made", text_color="orange")
             return
         
         try:
-            # Save to CSV
             output_dir = Path(self.controller.output_dir.get())
-            csv_path = output_dir / "primer_list.csv"
+            temp_path = output_dir / "primer_temp.csv"
             
-            # Backup original
-            backup_path = output_dir / "primer_list.csv.backup"
-            if csv_path.exists():
-                import shutil
-                shutil.copy(csv_path, backup_path)
+            fieldnames = list(self.primer_data[0].keys())
             
-            # Write updated data
-            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-                fieldnames = ["Primer Name", "Primer Sequence", "Length", "Tm (C)", 
-                            "Overlap Length", "Overlap Tm", "Mutations"]
+            with open(temp_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(self.primer_data)
             
-            # Update parent's data
-            self.parent.primer_data = copy.deepcopy(self.primer_data)
-            self.parent.load_primers()
-            
-            messagebox.showinfo("Success", f"Primers saved successfully!\n\nBackup created: {backup_path.name}")
-            self.window.destroy()
-            
+            self.status_label.configure(
+                text="Changes saved to primer_temp.csv - click 'Save Changes' in primer overview to apply",
+                text_color="green"
+            )
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save primers:\n{str(e)}")
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
 
 class PrimerPage(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -4472,6 +4569,11 @@ class PrimerPage(ctk.CTkFrame):
 
         edit_btn = ctk.CTkButton(controls_frame, text="Edit Primers", command=self.open_primer_editor)
         edit_btn.grid(row=0, column=2, sticky="w", padx=10, pady=10)
+
+        save_btn = ctk.CTkButton(controls_frame, text="Save Changes", 
+                                command=self.save_primers_to_disk,
+                                fg_color="green")
+        save_btn.grid(row=0, column=3, sticky="w", padx=10, pady=10)
 
     def create_table_area(self):
         self.scroll_frame = ScrollableFrameWithWheel(self)
@@ -4577,32 +4679,40 @@ class PrimerPage(ctk.CTkFrame):
         return textbox
 
     def load_primers(self):
-        """Load primer_list.csv and display in table with mutation highlighting and GC content"""
-        # Clear old table
+        """Load primers - prefer primer_temp.csv if it exists"""
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
         self.table_labels.clear()
 
-        # Path to file
-        path = Path(self.controller.output_dir.get()) / "primer_list.csv"
+        output_dir = Path(self.controller.output_dir.get())
+        temp_path = output_dir / "primer_temp.csv"
+        main_path = output_dir / "primer_list.csv"
+
+        # Use temp file if it exists, otherwise use main file
+        path = temp_path if temp_path.exists() else main_path
+
         if not path.exists():
             lbl = ctk.CTkLabel(self.scroll_frame, text="❌ No primer_list.csv found.", text_color="red")
             lbl.pack(pady=20)
             return
 
+        # Show indicator if using temp file
+        if temp_path.exists():
+            info_lbl = ctk.CTkLabel(self.scroll_frame,
+                text="⚠️ Showing unsaved changes from primer_temp.csv — click 'Save Changes' to apply permanently",
+                text_color="orange")
+            info_lbl.grid(row=0, column=0, columnspan=6, pady=5, sticky="ew")
+
         try:
-            # Load wildtype sequence for comparison
             self.wt_sequence = self.get_wildtype_sequence()
             if self.wt_sequence:
                 self.wt_sequence_rc = self.reverse_complement(self.wt_sequence)
             else:
-                # If no wildtype sequence, show warning but still display primers
-                warning_lbl = ctk.CTkLabel(self.scroll_frame, 
-                    text="⚠️ No wildtype sequence found - mutations won't be highlighted", 
+                warning_lbl = ctk.CTkLabel(self.scroll_frame,
+                    text="⚠️ No wildtype sequence found - mutations won't be highlighted",
                     text_color="orange")
-                warning_lbl.grid(row=0, column=0, columnspan=6, pady=10, sticky="ew")
+                warning_lbl.grid(row=1, column=0, columnspan=6, pady=10, sticky="ew")
 
-            # Read CSV
             with open(path, newline="", encoding='utf-8') as csvfile:
                 reader = csv.DictReader(csvfile)
                 primers = list(reader)
@@ -4611,8 +4721,7 @@ class PrimerPage(ctk.CTkFrame):
                 lbl = ctk.CTkLabel(self.scroll_frame, text="No primers found in file.", text_color="orange")
                 lbl.pack(pady=20)
                 return
-            
-            # Store primer data for editing
+
             self.primer_data = primers
 
             # Configure grid columns - now 6 columns
@@ -4750,6 +4859,36 @@ class PrimerPage(ctk.CTkFrame):
             return
         
         PrimerEditorWindow(self, self.controller, self.primer_data)
+
+    def save_primers_to_disk(self):
+        """Overwrite primer_list.csv with temp file, then delete temp"""
+        output_dir = Path(self.controller.output_dir.get())
+        temp_path = output_dir / "primer_temp.csv"
+        main_path = output_dir / "primer_list.csv"
+
+        if not temp_path.exists():
+            messagebox.showinfo("No Changes", "No pending changes to save (primer_temp.csv not found).")
+            return
+
+        try:
+            import shutil
+            # Backup original
+            if main_path.exists():
+                shutil.copy(main_path, output_dir / "primer_list.csv.backup")
+
+            # Overwrite main with temp
+            shutil.copy(temp_path, main_path)
+
+            # Delete temp file
+            temp_path.unlink()
+
+            # Reload from main file
+            self.load_primers()
+
+            messagebox.showinfo("Saved", f"Changes saved to primer_list.csv\nBackup: primer_list.csv.backup")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save:\n{str(e)}")
 
 
 class MutationExtractorPage(ctk.CTkFrame):
