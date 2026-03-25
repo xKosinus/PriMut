@@ -8,7 +8,7 @@ pyinstaller primer_windows.py --onefile --windowed --icon=primut.ico --hidden-im
 ```
 
 
-# Mutagenesis_Protocol
+# PriMut: Primer Design, Protocol Generation, and Protein Variant Management
 This repository provides a complete workflow for site-directed mutagenesis experiment planning with a modern Windows GUI — from primer design and mutation step planning to generating printable protocols and tube labels. It is tailored for molecular biology workflows involving multi-site mutagenesis with automated primer design and detailed PDF output.
 
 ✨ Key Features
